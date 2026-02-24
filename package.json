@@ -1,0 +1,23 @@
+{
+  "name": "babynote",
+  "version": "1.0.0",
+  "description": "育儿代办事项工具 - 本地部署",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "node server/index.js",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm run build",
+    "start": "npm run build && node server/index.js",
+    "db:init": "node server/init-db.js",
+    "ragflow:setup": "node scripts/setup-ragflow-kb.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.6.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.1"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

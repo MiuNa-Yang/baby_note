@@ -1,0 +1,23 @@
+﻿{
+  "version": 1,
+  "guides": [
+    {
+      "id": "feeding",
+      "title": "如何喂奶",
+      "summary": "喂奶姿势、拍嗝、常见问题处理",
+      "file": "feeding.md"
+    },
+    {
+      "id": "diaper",
+      "title": "如何换尿布",
+      "summary": "标准步骤、清洁与护肤要点",
+      "file": "diaper.md"
+    },
+    {
+      "id": "bath",
+      "title": "如何洗澡",
+      "summary": "洗澡前准备、洗澡流程与注意事项",
+      "file": "bath.md"
+    }
+  ]
+}

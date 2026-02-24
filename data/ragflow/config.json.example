@@ -1,0 +1,7 @@
+{
+  "base_url": "http://localhost:80",
+  "api_key": "ragflow-YOUR_API_KEY_HERE",
+  "chat_id": "YOUR_CHAT_ID_HERE",
+  "assistant_name": "育儿AI问答",
+  "dataset_ids": []
+}
