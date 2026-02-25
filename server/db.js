@@ -38,6 +38,8 @@ export function initDb() {
       -- 鐫＄湢鐩稿叧
       sleep_start TEXT,
       sleep_end TEXT,
+      -- 换尿布相关
+      stool INTEGER DEFAULT 0,
       -- 鐢ㄨ嵂鐩稿叧
       medicine_name TEXT,
       medicine_amount TEXT,
@@ -67,11 +69,15 @@ export function initDb() {
   const cols = db.prepare(`PRAGMA table_info(records)`).all();
   const hasWeightCol = cols.some((c) => c.name === 'weight_kg');
   const hasHeightCol = cols.some((c) => c.name === 'height_cm');
+  const hasStoolCol = cols.some((c) => c.name === 'stool');
   if (!hasWeightCol) {
     db.exec(`ALTER TABLE records ADD COLUMN weight_kg REAL`);
   }
   if (!hasHeightCol) {
     db.exec(`ALTER TABLE records ADD COLUMN height_cm REAL`);
+  }
+  if (!hasStoolCol) {
+    db.exec(`ALTER TABLE records ADD COLUMN stool INTEGER DEFAULT 0`);
   }
 
   // 鎻掑叆榛樿鎻愰啋瑙勫垯

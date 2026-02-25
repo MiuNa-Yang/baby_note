@@ -708,6 +708,7 @@ const growthChartStyles = {
 export default function Stats({ babyId }) {
   const [feedingData, setFeedingData] = useState([])
   const [sleepData, setSleepData] = useState({ daily: [], periods: [] })
+  const [diaperData, setDiaperData] = useState([])
   const [growthData, setGrowthData] = useState({ daily: [], latestWeight: null, latestHeight: null })
   const [overview, setOverview] = useState(null)
   const [days, setDays] = useState(3)
@@ -718,10 +719,12 @@ export default function Stats({ babyId }) {
     Promise.all([
       fetch(API + `/stats/feeding?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
       fetch(API + `/stats/sleep?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
+      fetch(API + `/stats/diaper?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
       fetch(API + `/stats/growth?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
-    ]).then(([feeding, sleep, growth]) => {
+    ]).then(([feeding, sleep, diaper, growth]) => {
       setFeedingData(Array.isArray(feeding) ? feeding : [])
       setSleepData(sleep?.daily ? sleep : { daily: [], periods: sleep?.periods || [] })
+      setDiaperData(Array.isArray(diaper) ? diaper : [])
       setGrowthData(growth?.daily ? growth : { daily: [], latestWeight: null, latestHeight: null })
     })
 
@@ -742,6 +745,7 @@ export default function Stats({ babyId }) {
   const avgDates = displayDates.slice(0, -1)
   const feedingByDate = Object.fromEntries(feedingData.map((d) => [d.date, d]))
   const sleepByDate = Object.fromEntries((sleepData.daily || []).map((d) => [d.date, d]))
+  const diaperByDate = Object.fromEntries(diaperData.map((d) => [d.date, d]))
   const totalMlForAvg = avgDates.reduce((s, date) => s + (feedingByDate[date]?.total_ml || 0), 0)
   const totalCountForAvg = avgDates.reduce((s, date) => s + (feedingByDate[date]?.count || 0), 0)
   const feedingAvgBase = Math.max(avgDates.length, 1)
@@ -781,6 +785,7 @@ export default function Stats({ babyId }) {
       total_minutes: sleep?.total_minutes || 0,
     }
   })
+  const totalStoolCount = displayDates.reduce((s, date) => s + Number(diaperByDate[date]?.stool_count || 0), 0)
   const chartData = Object.values(mergedByDate).sort((a, b) => a.date.localeCompare(b.date))
   const trendDates = new Set([...chartData.map((d) => d.date), ...growthSeries.map((d) => d.date)])
   const trendData = Array.from(trendDates)
@@ -927,6 +932,17 @@ export default function Stats({ babyId }) {
             ))}
           </div>
         )}
+      </section>
+
+      {/* 护理分析 */}
+      <section style={styles.statsSection}>
+        <h3 style={styles.sectionTitle}>护理分析</h3>
+        <div style={styles.cards}>
+          <div style={styles.card}>
+            <span style={styles.cardLabel}>排便次数（近{days + 1}天）</span>
+            <span style={styles.cardValue}>{totalStoolCount} 次</span>
+          </div>
+        </div>
       </section>
 
       {/* 生长分析 */}

@@ -73,10 +73,12 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
       handleSleep()
       return
     }
-    if (['feeding', 'medication', 'milestone', 'weight', 'height'].includes(type)) {
+    if (['feeding', 'medication', 'milestone', 'weight', 'height', 'diaper'].includes(type)) {
       setModal(type)
       if (type === 'feeding') {
         setForm({ feeding_type: 'formula', feeding_time: getBeijingNowForInput() })
+      } else if (type === 'diaper') {
+        setForm({ stool: 0 })
       } else if (type === 'weight') {
         setForm({ weight_kg: '', weight_time: getBeijingNowForInput() })
       } else if (type === 'height') {
@@ -214,6 +216,14 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
           onSubmit={() => submit({ type: 'height' })}
         />
       )}
+      {modal === 'diaper' && (
+        <DiaperModal
+          form={form}
+          setForm={setForm}
+          onClose={() => setModal(null)}
+          onSubmit={() => submit({ type: 'diaper' })}
+        />
+      )}
       {modal === 'milestone' && (
         <Modal onClose={() => setModal(null)} title="记录里程碑">
           <div style={formStyles.form}>
@@ -232,6 +242,37 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
         </Modal>
       )}
     </>
+  )
+}
+
+function DiaperModal({ form, setForm, onClose, onSubmit }) {
+  const hasStool = Number(form.stool || 0) === 1
+  return (
+    <Modal onClose={onClose} title="记录换尿布">
+      <div style={formStyles.form}>
+        <label style={formStyles.label}>是否有大便</label>
+        <div style={formStyles.toggleRow}>
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, stool: 1 })}
+            style={{ ...formStyles.toggleBtn, ...(hasStool ? formStyles.toggleActive : {}) }}
+          >
+            有大便
+          </button>
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, stool: 0 })}
+            style={{ ...formStyles.toggleBtn, ...(!hasStool ? formStyles.toggleActive : {}) }}
+          >
+            无大便
+          </button>
+        </div>
+        <div style={formStyles.btns}>
+          <button onClick={onClose} style={formStyles.btnCancel}>取消</button>
+          <button onClick={onSubmit} style={formStyles.btnOk}>确定</button>
+        </div>
+      </div>
+    </Modal>
   )
 }
 
@@ -561,6 +602,24 @@ const formStyles = {
     color: 'var(--text)',
     fontSize: '1rem',
     cursor: 'pointer',
+  },
+  toggleRow: {
+    display: 'flex',
+    gap: 10,
+  },
+  toggleBtn: {
+    flex: 1,
+    padding: 12,
+    borderRadius: 12,
+    border: '1px solid var(--border)',
+    background: 'var(--bg)',
+    color: 'var(--text-muted)',
+    fontSize: '1rem',
+  },
+  toggleActive: {
+    background: 'var(--primary)',
+    borderColor: 'var(--primary)',
+    color: '#fff',
   },
   btns: {
     display: 'flex',

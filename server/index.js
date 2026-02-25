@@ -641,8 +641,8 @@ app.post('/api/records', (req, res) => {
   try {
     const r = req.body;
     const stmt = db.prepare(`
-      INSERT INTO records (baby_id, type, created_at, note, feeding_type, left_minutes, right_minutes, amount_ml, sleep_start, sleep_end, medicine_name, medicine_amount, weight_kg, height_cm)
-      VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO records (baby_id, type, created_at, note, feeding_type, left_minutes, right_minutes, amount_ml, sleep_start, sleep_end, stool, medicine_name, medicine_amount, weight_kg, height_cm)
+      VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       r.baby_id,
@@ -655,6 +655,7 @@ app.post('/api/records', (req, res) => {
       r.amount_ml ?? null,
       r.sleep_start || null,
       r.sleep_end || null,
+      r.stool ?? null,
       r.medicine_name || null,
       r.medicine_amount || null,
       r.weight_kg ?? null,
@@ -694,6 +695,7 @@ app.patch('/api/records/:id', (req, res) => {
       { key: 'amount_ml', col: 'amount_ml', normalize: (v) => v === '' || v === null ? null : Number(v) },
       { key: 'sleep_start', col: 'sleep_start', normalize: (v) => v || null },
       { key: 'sleep_end', col: 'sleep_end', normalize: (v) => v || null },
+      { key: 'stool', col: 'stool', normalize: (v) => (v === '' || v === null ? null : Number(v) ? 1 : 0) },
       { key: 'medicine_name', col: 'medicine_name', normalize: (v) => v === '' ? null : v },
       { key: 'medicine_amount', col: 'medicine_amount', normalize: (v) => v === '' ? null : v },
       { key: 'weight_kg', col: 'weight_kg', normalize: (v) => v === '' || v === null ? null : Number(v) },
@@ -810,6 +812,29 @@ app.get('/api/stats/sleep', (req, res) => {
       .sort((a, b) => b.date.localeCompare(a.date));
 
     res.json({ daily, periods });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 排便统计
+app.get('/api/stats/diaper', (req, res) => {
+  try {
+    const { baby_id, days = 7 } = req.query;
+    const startDate = getBeijingDateDaysAgo(Number(days));
+    const sql = `
+      SELECT
+        date(created_at, '+8 hours') as date,
+        COUNT(*) as diaper_count,
+        SUM(CASE WHEN stool = 1 THEN 1 ELSE 0 END) as stool_count
+      FROM records
+      WHERE type = 'diaper' AND baby_id = ?
+        AND date(created_at, '+8 hours') >= date(?)
+      GROUP BY date(created_at, '+8 hours')
+      ORDER BY date DESC
+    `;
+    const rows = db.prepare(sql).all(baby_id, startDate);
+    res.json(rows);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

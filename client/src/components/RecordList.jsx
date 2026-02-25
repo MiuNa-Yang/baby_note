@@ -22,6 +22,9 @@ function formatDetail(r) {
       parts.push(`左${r.left_minutes || 0}分 右${r.right_minutes || 0}分`)
     }
   }
+  if (r.type === 'diaper') {
+    parts.push(Number(r.stool || 0) === 1 ? '有大便' : '无大便')
+  }
   if (r.type === 'sleep') {
     if (r.sleep_start && r.sleep_end) {
       const s = new Date(r.sleep_start).getTime()
@@ -79,6 +82,7 @@ function makeEditForm(record) {
     right_minutes: record.right_minutes ?? '',
     sleep_start: record.sleep_start ? toDateTimeLocal(record.sleep_start) : '',
     sleep_end: record.sleep_end ? toDateTimeLocal(record.sleep_end) : '',
+    stool: record.stool ?? 0,
     medicine_name: record.medicine_name || '',
     medicine_amount: record.medicine_amount || '',
     weight_kg: record.weight_kg ?? '',
@@ -206,6 +210,28 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
           </>
         )}
 
+        {record.type === 'diaper' && (
+          <>
+            <label style={formStyles.label}>是否有大便</label>
+            <div style={formStyles.toggleRow}>
+              <button
+                type="button"
+                style={{ ...formStyles.toggleBtn, ...(Number(form.stool || 0) === 1 ? formStyles.toggleActive : {}) }}
+                onClick={() => setForm({ ...form, stool: 1 })}
+              >
+                有大便
+              </button>
+              <button
+                type="button"
+                style={{ ...formStyles.toggleBtn, ...(Number(form.stool || 0) !== 1 ? formStyles.toggleActive : {}) }}
+                onClick={() => setForm({ ...form, stool: 0 })}
+              >
+                无大便
+              </button>
+            </div>
+          </>
+        )}
+
         {record.type === 'weight' && (
           <>
             <label style={formStyles.label}>体重 (kg)</label>
@@ -278,6 +304,9 @@ export default function RecordList({ records, onRefresh, hasMore = false, loadin
     if (editing.type === 'medication') {
       payload.medicine_name = editForm.medicine_name || null
       payload.medicine_amount = editForm.medicine_amount || null
+    }
+    if (editing.type === 'diaper') {
+      payload.stool = Number(editForm.stool || 0) ? 1 : 0
     }
 
     if (editing.type === 'weight') {
@@ -514,6 +543,24 @@ const formStyles = {
     color: 'var(--text)',
     fontSize: '1rem',
     cursor: 'pointer',
+  },
+  toggleRow: {
+    display: 'flex',
+    gap: 8,
+    marginTop: 2,
+  },
+  toggleBtn: {
+    flex: 1,
+    padding: '10px 12px',
+    borderRadius: 10,
+    border: '1px solid var(--border)',
+    background: 'var(--bg)',
+    color: 'var(--text-muted)',
+  },
+  toggleActive: {
+    background: 'var(--primary)',
+    borderColor: 'var(--primary)',
+    color: '#fff',
   },
   btns: {
     display: 'flex',
