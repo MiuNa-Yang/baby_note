@@ -1,6 +1,6 @@
 ﻿import { useState } from 'react'
 import { API } from '../App'
-import { getBeijingNowForInput } from '../utils/date'
+import { getBeijingNowForInput, parseDateTime } from '../utils/date'
 
 const TYPES = [
   { type: 'feeding', label: '喂奶', icon: '🍼' },
@@ -24,6 +24,25 @@ function adjustMl(value, delta) {
   const current = Number(value || 0)
   const next = Math.max(0, current + delta)
   return next
+}
+
+function getDefaultFeedingAmount(records) {
+  const targetTime = Date.now() - 24 * 60 * 60 * 1000
+  let nearestAmount = null
+  let nearestDistance = Number.POSITIVE_INFINITY
+
+  for (const record of records || []) {
+    if (record?.type !== 'feeding' || record?.amount_ml == null) continue
+    const recordTime = parseDateTime(record.created_at)?.getTime()
+    if (!recordTime || Number.isNaN(recordTime)) continue
+    const distance = Math.abs(recordTime - targetTime)
+    if (distance < nearestDistance) {
+      nearestDistance = distance
+      nearestAmount = Number(record.amount_ml)
+    }
+  }
+
+  return nearestAmount
 }
 
 export default function QuickAdd({ babyId, onAdd, openSleep }) {
@@ -68,17 +87,26 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
     }
   }
 
-  const quickAdd = (type) => {
+  const quickAdd = async (type) => {
     if (type === 'sleep') {
       handleSleep()
       return
     }
+    if (type === 'diaper') {
+      submit({ type: 'diaper', stool: 1 })
+      return
+    }
     if (['feeding', 'medication', 'milestone', 'weight', 'height', 'diaper'].includes(type)) {
-      setModal(type)
       if (type === 'feeding') {
-        setForm({ feeding_type: 'formula', feeding_time: getBeijingNowForInput() })
-      } else if (type === 'diaper') {
-        setForm({ stool: 0 })
+        let defaultAmount = null
+        try {
+          const response = await fetch(API + `/records?baby_id=${babyId}&paged=1&page=1&page_size=100`)
+          const data = await response.json()
+          defaultAmount = getDefaultFeedingAmount(Array.isArray(data?.records) ? data.records : [])
+        } catch {
+          defaultAmount = null
+        }
+        setForm({ feeding_type: 'formula', feeding_time: getBeijingNowForInput(), amount_ml: defaultAmount })
       } else if (type === 'weight') {
         setForm({ weight_kg: '', weight_time: getBeijingNowForInput() })
       } else if (type === 'height') {
@@ -86,6 +114,7 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
       } else {
         setForm({})
       }
+      setModal(type)
       return
     }
     submit({ type })
@@ -216,14 +245,6 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
           onSubmit={() => submit({ type: 'height' })}
         />
       )}
-      {modal === 'diaper' && (
-        <DiaperModal
-          form={form}
-          setForm={setForm}
-          onClose={() => setModal(null)}
-          onSubmit={() => submit({ type: 'diaper' })}
-        />
-      )}
       {modal === 'milestone' && (
         <Modal onClose={() => setModal(null)} title="记录里程碑">
           <div style={formStyles.form}>
@@ -245,36 +266,6 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
   )
 }
 
-function DiaperModal({ form, setForm, onClose, onSubmit }) {
-  const hasStool = Number(form.stool || 0) === 1
-  return (
-    <Modal onClose={onClose} title="记录换尿布">
-      <div style={formStyles.form}>
-        <label style={formStyles.label}>是否有大便</label>
-        <div style={formStyles.toggleRow}>
-          <button
-            type="button"
-            onClick={() => setForm({ ...form, stool: 1 })}
-            style={{ ...formStyles.toggleBtn, ...(hasStool ? formStyles.toggleActive : {}) }}
-          >
-            有大便
-          </button>
-          <button
-            type="button"
-            onClick={() => setForm({ ...form, stool: 0 })}
-            style={{ ...formStyles.toggleBtn, ...(!hasStool ? formStyles.toggleActive : {}) }}
-          >
-            无大便
-          </button>
-        </div>
-        <div style={formStyles.btns}>
-          <button onClick={onClose} style={formStyles.btnCancel}>取消</button>
-          <button onClick={onSubmit} style={formStyles.btnOk}>确定</button>
-        </div>
-      </div>
-    </Modal>
-  )
-}
 
 function WeightModal({ form, setForm, onClose, onSubmit }) {
   return (
@@ -356,7 +347,7 @@ function FeedingModal({ form, setForm, onClose, onSubmit }) {
               <input
                 style={{ ...formStyles.input, margin: 0 }}
                 type="number"
-                step="30"
+                step="10"
                 min="0"
                 placeholder="例: 90"
                 value={form.amount_ml || ''}
@@ -366,16 +357,16 @@ function FeedingModal({ form, setForm, onClose, onSubmit }) {
                 <button
                   type="button"
                   style={formStyles.stepBtnArrowTop}
-                  onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, 30) })}
-                  title="+30ml"
+                  onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, 10) })}
+                  title="+10ml"
                 >
                   ▲
                 </button>
                 <button
                   type="button"
                   style={formStyles.stepBtnArrowBottom}
-                  onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, -30) })}
-                  title="-30ml"
+                  onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, -10) })}
+                  title="-10ml"
                 >
                   ▼
                 </button>

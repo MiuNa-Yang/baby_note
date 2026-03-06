@@ -124,7 +124,7 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
                   <input
                     style={{ ...formStyles.input, margin: 0 }}
                     type="number"
-                    step="30"
+                    step="10"
                     min="0"
                     placeholder="例: 90"
                     value={form.amount_ml}
@@ -134,16 +134,16 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
                     <button
                       type="button"
                       style={formStyles.stepBtnArrowTop}
-                      onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, 30) })}
-                      title="+30ml"
+                      onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, 10) })}
+                      title="+10ml"
                     >
                       ▲
                     </button>
                     <button
                       type="button"
                       style={formStyles.stepBtnArrowBottom}
-                      onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, -30) })}
-                      title="-30ml"
+                      onClick={() => setForm({ ...form, amount_ml: adjustMl(form.amount_ml, -10) })}
+                      title="-10ml"
                     >
                       ▼
                     </button>
