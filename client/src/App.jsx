@@ -7,6 +7,7 @@ import Stats from './pages/Stats'
 import History from './pages/History'
 import Settings from './pages/Settings'
 import Guide from './pages/Guide'
+import Schedule from './pages/Schedule'
 
 const API = '/api'
 
@@ -110,6 +111,7 @@ export default function App() {
             <Route path="/stats" element={<Stats babyId={currentBaby} />} />
             <Route path="/history" element={<History babyId={currentBaby} />} />
             <Route path="/guide" element={<Guide babyId={currentBaby} />} />
+            <Route path="/schedule" element={<Schedule babyId={currentBaby} />} />
             <Route path="/settings" element={<Settings babyId={currentBaby} />} />
             <Route path="/babies" element={<BabyManage onDone={refreshBabies} />} />
             <Route path="*" element={<Navigate to="/" replace />} />

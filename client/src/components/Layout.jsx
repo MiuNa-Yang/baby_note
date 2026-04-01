@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom'
 
 const navItems = [
   { path: '/', icon: '🧭', label: '总览' },
-  { path: '/guide', icon: '🤖', label: 'AI问答' },
+  { path: '/schedule', icon: '📋', label: '日程' },
   { path: '/stats', icon: '📈', label: '分析' },
   { path: '/history', icon: '🗂️', label: '时间线' },
   { path: '/settings', icon: '🛠️', label: '管理' },
@@ -47,6 +47,7 @@ export default function Layout({ children, currentBaby, setCurrentBaby, babies }
   }, [isGuidePage])
 
   const hideNav = isGuidePage && guideInputFocused
+  const isSchedulePage = loc.pathname === '/schedule'
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -72,6 +73,7 @@ export default function Layout({ children, currentBaby, setCurrentBaby, babies }
         style={{
           ...styles.main,
           ...(isGuidePage ? (hideNav ? styles.mainGuideInput : styles.mainGuide) : null),
+          ...(isSchedulePage ? styles.mainSchedule : null),
         }}
       >
         {children}
@@ -131,6 +133,9 @@ const styles = {
     paddingBottom: 104,
   },
   mainGuide: {
+    paddingBottom: 104,
+  },
+  mainSchedule: {
     paddingBottom: 104,
   },
   mainGuideInput: {

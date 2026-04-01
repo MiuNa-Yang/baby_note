@@ -142,6 +142,51 @@ function computeFeedingReminder({ rules, lastFeedingAt, now }) {
   };
 }
 
+function isAdSupplementRecord(record) {
+  const text = [
+    record?.medicine_name || '',
+    record?.medicine_amount || '',
+    record?.note || '',
+  ]
+    .join(' ')
+    .toLowerCase();
+
+  return (
+    text.includes('维生素ad') ||
+    text.includes('维生素 ad') ||
+    text.includes('ad补给') ||
+    text.includes('ad supplement') ||
+    /\bad\b/.test(text)
+  );
+}
+
+function computeAdReminder({ lastAdAt, now, intervalMinutes = 48 * 60 }) {
+  const fixedInterval = Math.max(0, Number(intervalMinutes || 0));
+  if (!lastAdAt) {
+    return {
+      intervalMinutes: fixedInterval,
+      lastAdAt: null,
+      nextAdAt: now.toISOString(),
+      remainingMinutes: 0,
+      overdueMinutes: 0,
+      isAdDue: true,
+    };
+  }
+
+  const nextAdAt = new Date(lastAdAt.getTime() + fixedInterval * 60000);
+  const diffMs = nextAdAt.getTime() - now.getTime();
+  const remainingMinutes = diffMs >= 0 ? Math.ceil(diffMs / 60000) : Math.floor(diffMs / 60000);
+
+  return {
+    intervalMinutes: fixedInterval,
+    lastAdAt: lastAdAt.toISOString(),
+    nextAdAt: nextAdAt.toISOString(),
+    remainingMinutes,
+    overdueMinutes: diffMs < 0 ? Math.abs(Math.floor(diffMs / 60000)) : 0,
+    isAdDue: diffMs <= 0,
+  };
+}
+
 function getRecorderInfo(req) {
   return {
     recorder_id: req.body?.recorder_id || req.headers['x-recorder-id'] || null,
@@ -949,6 +994,17 @@ app.get('/api/overview', (req, res) => {
     const lastFeedingAt = lastFeeding ? parseDbDateTime(lastFeeding.created_at) : null;
     const feedingReminder = computeFeedingReminder({ rules, lastFeedingAt, now });
 
+    const latestMedicationRecords = db.prepare(`
+      SELECT created_at, medicine_name, medicine_amount, note
+      FROM records
+      WHERE baby_id = ? AND type = 'medication'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 500
+    `).all(baby_id);
+    const lastAdRecord = latestMedicationRecords.find((row) => isAdSupplementRecord(row)) || null;
+    const lastAdAt = lastAdRecord ? parseRecordDateFlexible(lastAdRecord.created_at, now) : null;
+    const adReminder = computeAdReminder({ lastAdAt, now });
+
     const recent24hStats = computeRecent24hFeedingStats(baby_id, now);
 
     // const rules = db.prepare(`
@@ -1018,6 +1074,7 @@ app.get('/api/overview', (req, res) => {
         } : null,
         lastFeedingAt: lastFeedingAt ? lastFeedingAt.toISOString() : null,
         ...feedingReminder,
+        ad: adReminder,
       },
     });
   } catch (e) {
@@ -1075,6 +1132,121 @@ app.get('/api/export', (req, res) => {
       ? db.prepare('SELECT * FROM records WHERE baby_id = ? ORDER BY created_at').all(baby_id)
       : db.prepare('SELECT * FROM records ORDER BY created_at').all();
     res.json({ babies, records, exported_at: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 日程统计 API：喂奶历史时间分布 + AD + 最近排便
+app.get('/api/schedule-stats', (req, res) => {
+  try {
+    const { baby_id } = req.query;
+    const id = Number(baby_id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'baby_id required' });
+    }
+    const now = new Date();
+
+    // 今日（北京时间）喂奶记录
+    const todayStr = getBeijingDate();
+    const todayFeedings = db.prepare(`
+      SELECT created_at, amount_ml
+      FROM records
+      WHERE baby_id = ? AND type = 'feeding'
+        AND date(created_at, '+8 hours') = date(?)
+      ORDER BY created_at ASC
+    `).all(id, todayStr);
+
+    const todayTimes = todayFeedings.map(r => {
+      const d = parseRecordDateFlexible(r.created_at, now);
+      if (!d) return null;
+      const h = String(d.getHours()).padStart(2, '0');
+      const m = String(d.getMinutes()).padStart(2, '0');
+      return { time: `${h}:${m}`, amount_ml: r.amount_ml };
+    }).filter(Boolean);
+
+    const todayTotalMl = todayFeedings.reduce((s, r) => s + Number(r.amount_ml || 0), 0);
+
+    // 最近 7 天喂奶记录，按小时聚合（用于推算常规喂奶时间）
+    const recentFeedings = db.prepare(`
+      SELECT created_at, amount_ml
+      FROM records
+      WHERE baby_id = ? AND type = 'feeding'
+        AND created_at >= datetime('now', '-7 days')
+      ORDER BY created_at DESC
+      LIMIT 500
+    `).all(id);
+
+    const hourDist = {};
+    for (const r of recentFeedings) {
+      const d = parseRecordDateFlexible(r.created_at, now);
+      if (!d) continue;
+      const h = d.getHours();
+      hourDist[h] = (hourDist[h] || 0) + 1;
+    }
+
+    // AD 补充状态
+    const medRecords = db.prepare(`
+      SELECT created_at, medicine_name, medicine_amount, note
+      FROM records
+      WHERE baby_id = ? AND type = 'medication'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 200
+    `).all(id);
+    const lastAdRecord = medRecords.find(row => isAdSupplementRecord(row)) || null;
+    const lastAdAt = lastAdRecord ? parseRecordDateFlexible(lastAdRecord.created_at, now) : null;
+    const adReminder = computeAdReminder({ lastAdAt, now });
+
+    // 最近一次有大便的换尿布（JS排序，避免混合时区字符串在SQL中排序错误）
+    const recentPoopCandidates = db.prepare(`
+      SELECT created_at
+      FROM records
+      WHERE baby_id = ? AND type = 'diaper' AND stool = 1
+      ORDER BY id DESC
+      LIMIT 200
+    `).all(id);
+    const poopTimes = recentPoopCandidates
+      .map(r => parseRecordDateFlexible(r.created_at, now))
+      .filter(d => d && !Number.isNaN(d.getTime()))
+      .sort((a, b) => b.getTime() - a.getTime());
+    const lastPoopAt = poopTimes[0] ?? null;
+    let lastPoopHoursAgo = null;
+    if (lastPoopAt) {
+      lastPoopHoursAgo = Math.round((now.getTime() - lastPoopAt.getTime()) / 3600000 * 10) / 10;
+    }
+
+    // 最近 7 天每天大便次数
+    const recentPoopRows = db.prepare(`
+      SELECT date(created_at, '+8 hours') as date, COUNT(*) as count
+      FROM records
+      WHERE baby_id = ? AND type = 'diaper' AND stool = 1
+        AND date(created_at, '+8 hours') >= date(?, '-7 days')
+      GROUP BY date(created_at, '+8 hours')
+      ORDER BY date DESC
+    `).all(id, todayStr);
+    const avgDailyPoops = recentPoopRows.length
+      ? Math.round((recentPoopRows.reduce((s, r) => s + r.count, 0) / recentPoopRows.length) * 10) / 10
+      : null;
+
+    res.json({
+      feeding: {
+        today_count: todayFeedings.length,
+        today_total_ml: Math.round(todayTotalMl),
+        today_times: todayTimes,
+        hour_distribution: hourDist,
+      },
+      ad: {
+        last_at: lastAdAt ? lastAdAt.toISOString() : null,
+        is_due: adReminder.isAdDue,
+        remaining_minutes: adReminder.remainingMinutes,
+        overdue_minutes: adReminder.overdueMinutes,
+      },
+      poop: {
+        last_at: lastPoopAt ? lastPoopAt.toISOString() : null,
+        hours_ago: lastPoopHoursAgo,
+        avg_daily: avgDailyPoops,
+      },
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

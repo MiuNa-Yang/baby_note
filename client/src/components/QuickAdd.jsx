@@ -4,6 +4,7 @@ import { getBeijingNowForInput, parseDateTime } from '../utils/date'
 
 const TYPES = [
   { type: 'feeding', label: '喂奶', icon: '🍼' },
+  { type: 'ad_supplement', label: 'AD补给', icon: '🌞' },
   { type: 'sleep', label: '睡眠', icon: '😴' },
   { type: 'diaper', label: '换尿布', icon: '👶' },
   { type: 'weight', label: '体重', icon: '⚖️' },
@@ -92,6 +93,16 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
       handleSleep()
       return
     }
+    if (type === 'ad_supplement') {
+      submit({
+        type: 'medication',
+        medicine_name: '维生素AD',
+        medicine_amount: '1次',
+        note: 'AD补给',
+      })
+      showToast('已记录 AD 补给')
+      return
+    }
     if (type === 'diaper') {
       submit({ type: 'diaper', stool: 1 })
       return
@@ -121,7 +132,7 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
   }
 
   const submit = (extra = {}) => {
-    const payload = { baby_id: babyId, type: modal || extra.type, ...form, ...extra }
+    const payload = { baby_id: babyId, type: modal || extra.type, ...(modal ? form : {}), ...extra }
     if (payload.feeding_time) {
       payload.created_at = payload.created_at || toISOFromLocal(payload.feeding_time)
       delete payload.feeding_time
@@ -157,7 +168,7 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
   const sleepLabel = openSleep ? '醒来' : '睡眠'
   const visibleTypes = expanded
     ? TYPES
-    : TYPES.filter(t => ['feeding', 'sleep', 'diaper', 'weight', 'height'].includes(t.type))
+    : TYPES.filter(t => ['feeding', 'ad_supplement', 'sleep', 'diaper', 'weight', 'height'].includes(t.type))
 
   const openSleepManual = () => {
     setForm({

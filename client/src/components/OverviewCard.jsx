@@ -24,6 +24,12 @@ function getRemainingMinutes(nextFeedingAt, nowMs) {
   return diffMs >= 0 ? Math.ceil(diffMs / 60000) : Math.floor(diffMs / 60000)
 }
 
+function formatRemainingMinutesLabel(remainingMinutes, emptyText) {
+  if (remainingMinutes === null || remainingMinutes === undefined) return emptyText
+  if (remainingMinutes < 0) return `已超时 ${Math.abs(remainingMinutes)} 分钟`
+  return `还有 ${remainingMinutes} 分钟`
+}
+
 export default function OverviewCard({ overview }) {
   const [tick, setTick] = useState(Date.now())
 
@@ -37,8 +43,11 @@ export default function OverviewCard({ overview }) {
   const { ageDays, reminder } = overview
   const ageText = formatAge(ageDays)
   const remainingMinutes = getRemainingMinutes(reminder?.nextFeedingAt, tick)
+  const adRemainingMinutes = Number.isFinite(reminder?.ad?.remainingMinutes) ? reminder.ad.remainingMinutes : null
   const overdue = remainingMinutes !== null && remainingMinutes < 0
   const dueNow = remainingMinutes !== null && remainingMinutes <= 0
+  const adOverdue = adRemainingMinutes !== null && adRemainingMinutes < 0
+  const adDueNow = reminder?.ad?.isAdDue === true
 
   return (
     <div style={styles.card}>
@@ -66,16 +75,29 @@ export default function OverviewCard({ overview }) {
       <div style={styles.row}>
         <span style={styles.label}>剩余时间</span>
         <span style={{ ...styles.value, ...(overdue ? styles.valueWarn : {}) }}>
-          {remainingMinutes === null
-            ? '请先记录喂奶'
-            : overdue
-              ? `已超时 ${Math.abs(remainingMinutes)} 分钟`
-              : `还有 ${remainingMinutes} 分钟`}
+          {formatRemainingMinutesLabel(remainingMinutes, '请先记录喂奶')}
+        </span>
+      </div>
+
+      <div style={styles.row}>
+        <span style={styles.label}>下次AD补给</span>
+        <span style={styles.value}>
+          {reminder?.ad?.nextAdAt ? formatTime(reminder.ad.nextAdAt) : '暂无'}
+        </span>
+      </div>
+
+      <div style={styles.row}>
+        <span style={styles.label}>AD提醒</span>
+        <span style={{ ...styles.value, ...(adOverdue ? styles.valueWarn : {}) }}>
+          {formatRemainingMinutesLabel(adRemainingMinutes, '请先记录AD补给')}
         </span>
       </div>
 
       {dueNow && (
         <div style={styles.alert}>应该喂奶了，请尽快喂奶</div>
+      )}
+      {adDueNow && (
+        <div style={styles.alert}>该补充AD了（隔天一次）</div>
       )}
     </div>
   )
