@@ -9,11 +9,14 @@ pnpm-debug.log*
 # Build outputs
 client/dist/
 client/build/
+infra/cc-connect/bin/
 *.tsbuildinfo
 
 # Database
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -38,6 +41,10 @@ server.log
 # Temp
 tmp/
 temp/
+.codex-remote-attachments/
+
+# Local XiaoAI gateway checkout
+infra/xiaoai/mi-voice-agent/
 
 # Data files - ignore sensitive config but keep structure
 data/ragflow/config.json
@@ -45,6 +52,8 @@ data/ragflow/*.pdf
 data/ragflow/*.md
 data/babynote.db
 data/raw_knowledge/
+data/music/
+data/guides/sleep-summary-*.svg
 
 # vibe coding
 .claude/

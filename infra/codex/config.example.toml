@@ -1,0 +1,44 @@
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+# This runtime only needs the BabyNote MCP tools. Keeping general Codex app,
+# plugin, skill, browser, shell, and media tools disabled avoids sending tens of
+# thousands of irrelevant tool-schema tokens to the local model.
+[features]
+apps = false
+plugins = false
+skill_search = false
+browser_use = false
+computer_use = false
+image_generation = false
+in_app_browser = false
+in_app_chat = false
+workspace_dependencies = false
+multi_agent = false
+goals = false
+hooks = false
+shell_tool = false
+unified_exec = false
+view_image = false
+
+[mcp_servers.babynote]
+command = "node"
+args = ["__BABYNOTE_ROOT__/server/agent/mcp-server.js"]
+# cc-connect runs Codex non-interactively. Explicitly approve this dedicated,
+# allow-listed MCP server so tool calls are not cancelled waiting for a UI prompt.
+default_tools_approval_mode = "approve"
+enabled_tools = [
+  "record_milk",
+  "start_sleep",
+  "end_sleep",
+  "record_solid_meal",
+  "get_latest_feeding",
+  "get_latest_wake",
+  "get_summary",
+  "get_today_summary",
+  "get_meal_plan",
+  "build_daily_reminder",
+]
+
+[mcp_servers.babynote.env]
+BABYNOTE_AGENT_BABY_ID = "3"

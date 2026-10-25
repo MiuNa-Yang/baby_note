@@ -9,13 +9,19 @@
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
     "start": "npm run build && node server/index.js",
+    "agent:mcp": "node server/agent/mcp-server.js",
+    "agent:eval-local": "node server/agent/eval-local-model.js",
+    "agent:eval-harness": "node server/agent/eval-local-harness.js",
+    "test": "node --test server/**/*.test.js",
     "db:init": "node server/init-db.js",
     "ragflow:setup": "node scripts/setup-ragflow-kb.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^11.6.0",
     "cors": "^2.8.5",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"

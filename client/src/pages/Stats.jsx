@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect, useMemo, useRef } from 'react'
 import { API } from '../App'
-import { formatTime, getBeijingDate } from '../utils/date'
+import { formatTime, getBeijingDate, parseDateTime } from '../utils/date'
 
 function formatAge(ageDays) {
   const days = Number(ageDays || 0)
@@ -77,6 +77,23 @@ function shiftDate(dateStr, deltaDays) {
 function getContinuousDates(endDate, count) {
   const safeCount = Math.max(Number(count) || 0, 1)
   return Array.from({ length: safeCount }, (_, i) => shiftDate(endDate, -(safeCount - 1 - i)))
+}
+
+function formatRecordDate(value) {
+  const d = parseDateTime(value)
+  if (!d || Number.isNaN(d.getTime())) return ''
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' })
+}
+
+function ageTextAtDate(birthdate, recordDate) {
+  if (!birthdate || !recordDate) return '--'
+  const [by, bm, bd] = String(birthdate).slice(0, 10).split('-').map(Number)
+  const [ry, rm, rd] = String(recordDate).slice(0, 10).split('-').map(Number)
+  if (!by || !bm || !bd || !ry || !rm || !rd) return '--'
+  const birth = Date.UTC(by, bm - 1, bd)
+  const record = Date.UTC(ry, rm - 1, rd)
+  const ageDays = Math.max(0, Math.floor((record - birth) / (24 * 60 * 60 * 1000)))
+  return formatAge(ageDays)
 }
 
 function useDragScroll() {
@@ -710,22 +727,29 @@ export default function Stats({ babyId }) {
   const [sleepData, setSleepData] = useState({ daily: [], periods: [] })
   const [diaperData, setDiaperData] = useState([])
   const [growthData, setGrowthData] = useState({ daily: [], latestWeight: null, latestHeight: null })
+  const [weightRecords, setWeightRecords] = useState([])
+  const [heightRecords, setHeightRecords] = useState([])
   const [overview, setOverview] = useState(null)
   const [days, setDays] = useState(3)
+  const [showGrowthChart, setShowGrowthChart] = useState(false)
 
   useEffect(() => {
     if (!babyId) return
     const queryDays = days + 1
     Promise.all([
       fetch(API + `/stats/feeding?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
-      fetch(API + `/stats/sleep?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
+      fetch(API + `/stats/sleep?baby_id=${babyId}&days=7`).then(r => r.json()),
       fetch(API + `/stats/diaper?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
-      fetch(API + `/stats/growth?baby_id=${babyId}&days=${queryDays}`).then(r => r.json()),
-    ]).then(([feeding, sleep, diaper, growth]) => {
+      fetch(API + `/stats/growth?baby_id=${babyId}&days=all`).then(r => r.json()),
+      fetch(API + `/records?baby_id=${babyId}&type=weight`).then(r => r.json()),
+      fetch(API + `/records?baby_id=${babyId}&type=height`).then(r => r.json()),
+    ]).then(([feeding, sleep, diaper, growth, weights, heights]) => {
       setFeedingData(Array.isArray(feeding) ? feeding : [])
       setSleepData(sleep?.daily ? sleep : { daily: [], periods: sleep?.periods || [] })
       setDiaperData(Array.isArray(diaper) ? diaper : [])
       setGrowthData(growth?.daily ? growth : { daily: [], latestWeight: null, latestHeight: null })
+      setWeightRecords(Array.isArray(weights) ? weights : [])
+      setHeightRecords(Array.isArray(heights) ? heights : [])
     })
 
     fetch(API + `/overview?baby_id=${babyId}`)
@@ -751,9 +775,11 @@ export default function Stats({ babyId }) {
   const feedingAvgBase = Math.max(avgDates.length, 1)
   const avgFeedingCount = totalCountForAvg / feedingAvgBase
   const avgFeedingMl = totalMlForAvg / feedingAvgBase
-  const totalSleepMin = displayDates.reduce((s, date) => s + (sleepByDate[date]?.total_minutes || 0), 0)
-  const totalSleepMinForAvg = avgDates.reduce((s, date) => s + (sleepByDate[date]?.total_minutes || 0), 0)
-  const sleepSessions = displayDates.reduce((s, date) => s + (sleepByDate[date]?.sessions || 0), 0)
+  const sleepWeekDates = getContinuousDates(today, 7)
+  const weeklySleepMin = sleepWeekDates.reduce((s, date) => s + (sleepByDate[date]?.total_minutes || 0), 0)
+  const weeklySleepSessions = sleepWeekDates.reduce((s, date) => s + (sleepByDate[date]?.sessions || 0), 0)
+  const avgSleepMin = Math.round(weeklySleepMin / 7)
+  const avgSleepSessions = weeklySleepSessions / 7
   const growthSeries = (growthData.daily || [])
     .map((d) => ({
       date: d.date,
@@ -763,51 +789,50 @@ export default function Stats({ babyId }) {
       height_count: Number(d.height_count || 0),
     }))
     .sort((a, b) => a.date.localeCompare(b.date))
-  const weightByDate = Object.fromEntries(growthSeries.map((d) => [d.date, d.avg_weight_kg]))
-  const heightByDate = Object.fromEntries(growthSeries.map((d) => [d.date, d.avg_height_cm]))
   const latestWeight = growthData.latestWeight?.weight_kg != null ? Number(growthData.latestWeight.weight_kg) : null
   const latestHeight = growthData.latestHeight?.height_cm != null ? Number(growthData.latestHeight.height_cm) : null
-  const firstWeight = growthSeries.length ? growthSeries[0].avg_weight_kg : null
-  const lastWeight = growthSeries.length ? growthSeries[growthSeries.length - 1].avg_weight_kg : null
-  const firstHeight = growthSeries.length ? growthSeries[0].avg_height_cm : null
-  const lastHeight = growthSeries.length ? growthSeries[growthSeries.length - 1].avg_height_cm : null
-  const weightDelta = firstWeight != null && lastWeight != null ? Number((lastWeight - firstWeight).toFixed(2)) : null
-  const heightDelta = firstHeight != null && lastHeight != null ? Number((lastHeight - firstHeight).toFixed(1)) : null
-
-  const mergedByDate = {}
-  displayDates.forEach((d) => {
-    const feeding = feedingByDate[d]
-    const sleep = sleepByDate[d]
-    mergedByDate[d] = {
-      date: d,
-      total_ml: feeding?.total_ml || 0,
-      feeding_count: feeding?.count || 0,
-      total_minutes: sleep?.total_minutes || 0,
-    }
+  const birthdate = overview?.birthdate || null
+  const weightRows = weightRecords
+    .filter((r) => r.weight_kg != null)
+    .map((r) => {
+      const date = formatRecordDate(r.created_at)
+      return {
+        id: r.id,
+        date,
+        age: ageTextAtDate(birthdate, date),
+        value: `${(Number(r.weight_kg) * 2).toFixed(1)} 斤`,
+      }
+    })
+  const heightRows = heightRecords
+    .filter((r) => r.height_cm != null)
+    .map((r) => {
+      const date = formatRecordDate(r.created_at)
+      return {
+        id: r.id,
+        date,
+        age: ageTextAtDate(birthdate, date),
+        value: `${Number(r.height_cm).toFixed(1)} cm`,
+      }
+    })
+  const recentSleepDates = displayDates.slice(-3).reverse()
+  const sleepPeriodsByDate = (sleepData.periods || []).reduce((map, period) => {
+    const date = formatRecordDate(period.start) || period.date
+    if (!recentSleepDates.includes(date)) return map
+    if (!map[date]) map[date] = []
+    map[date].push(period)
+    return map
+  }, {})
+  const sleepPeriodGroups = recentSleepDates.map((date) => {
+    const periods = (sleepPeriodsByDate[date] || [])
+      .sort((a, b) => String(a.start).localeCompare(String(b.start)))
+    const totalMinutes = periods.reduce((sum, p) => sum + Number(p.duration_minutes || 0), 0)
+    return { date, periods, totalMinutes }
   })
   const totalStoolCount = displayDates.reduce((s, date) => s + Number(diaperByDate[date]?.stool_count || 0), 0)
-  const chartData = Object.values(mergedByDate).sort((a, b) => a.date.localeCompare(b.date))
-  const trendDates = new Set([...chartData.map((d) => d.date), ...growthSeries.map((d) => d.date)])
-  const trendData = Array.from(trendDates)
-    .map((date) => {
-      const base = chartData.find((d) => d.date === date) || { date, total_ml: 0, feeding_count: 0, total_minutes: 0 }
-      return { ...base, avg_weight_kg: weightByDate[date] ?? null, avg_height_cm: heightByDate[date] ?? null }
-    })
-    .sort((a, b) => a.date.localeCompare(b.date))
   const todayFeeding = feedingByDate[today]
   const todaySleep = sleepByDate[today]
   const todayMl = Number(todayFeeding?.total_ml || 0)
   const todayFeedingCount = Number(todayFeeding?.count || 0)
-  const recent24hMl = Number(
-    overview?.recent24h_feeding_total_ml ??
-    overview?.recent24hFeedingTotalMl ??
-    0
-  )
-  const recent24hFeedingCount = Number(
-    overview?.recent24h_feeding_count ??
-    overview?.recent24hFeedingCount ??
-    0
-  )
   const todaySleepMin = todaySleep?.total_minutes || 0
   const ageText = overview?.ageDays == null ? '--' : formatAge(overview.ageDays)
 
@@ -828,14 +853,6 @@ export default function Stats({ babyId }) {
           <div style={styles.todayCard}>
             <span style={styles.cardLabel}>今日喂奶次数</span>
             <span style={styles.todayValue}>{todayFeedingCount} 次</span>
-          </div>
-          <div style={styles.todayCard}>
-            <span style={styles.cardLabel}>近24小时奶量</span>
-            <span style={styles.todayValue}>{recent24hMl} ml</span>
-          </div>
-          <div style={styles.todayCard}>
-            <span style={styles.cardLabel}>近24小时喂奶次数</span>
-            <span style={styles.todayValue}>{recent24hFeedingCount} 次</span>
           </div>
           <div style={styles.todayCard}>
             <span style={styles.cardLabel}>今日睡眠时长</span>
@@ -882,12 +899,6 @@ export default function Stats({ babyId }) {
             <span style={styles.cardValue}>{Math.round(avgFeedingMl)} ml</span>
           </div>
         </div>
-        {chartData.length > 0 && (
-          <div style={styles.statsChartCard}>
-            <span style={styles.chartTitle}>每日喂奶量与次数</span>
-            <FeedingComboChart data={chartData} barKey="total_ml" lineKey="feeding_count" />
-          </div>
-        )}
       </section>
 
       {/* 睡眠分析 */}
@@ -895,41 +906,36 @@ export default function Stats({ babyId }) {
         <h3 style={styles.sectionTitle}>睡眠分析</h3>
         <div style={styles.cards}>
           <div style={styles.card}>
-            <span style={styles.cardLabel}>睡眠总时长</span>
-            <span style={styles.cardValue}>{formatDuration(totalSleepMin)}</span>
+            <span style={styles.cardLabel}>日均睡眠时长</span>
+            <span style={styles.cardValue}>{formatDuration(avgSleepMin)}</span>
           </div>
           <div style={styles.card}>
-            <span style={styles.cardLabel}>睡眠次数</span>
-            <span style={styles.cardValue}>{sleepSessions} 次</span>
+            <span style={styles.cardLabel}>日均睡眠次数</span>
+            <span style={styles.cardValue}>{avgSleepSessions.toFixed(1)} 次</span>
           </div>
-          {days > 0 && (
-            <div style={styles.card}>
-              <span style={styles.cardLabel}>日均睡眠</span>
-              <span style={styles.cardValue}>
-                {formatDuration(Math.round(totalSleepMinForAvg / Math.max(avgDates.length, 1)))}
-              </span>
-            </div>
-          )}
         </div>
-        {chartData.length > 0 && (
-          <div style={styles.statsChartCard}>
-            <span style={styles.chartTitle}>每日睡眠时长</span>
-            <SimpleBarChart data={chartData} dataKey="total_minutes" color="#85cdca" />
-          </div>
-        )}
-
-        {sleepData.periods?.length > 0 && (
+        {sleepPeriodGroups.length > 0 && (
           <div style={styles.periods}>
             <h4 style={styles.periodsTitle}>睡眠时间段</h4>
-            {sleepData.periods.map((p, i) => (
-              <div key={i} style={styles.periodItem}>
-                <span style={styles.periodTime}>
-                  {formatTime(p.start)} - {formatTime(p.end)}
-                </span>
-                <span style={styles.periodDur}>{formatDuration(p.duration_minutes)}</span>
-                <span style={styles.periodDate}>{p.date}</span>
+            <div style={styles.sleepTable}>
+              <div style={styles.sleepTableRow}>
+                <span style={{ ...styles.th, ...styles.dateCell }}>日期</span>
+                <span style={{ ...styles.th, ...styles.dateCell }}>细分时间段</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>睡眠时长</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>总睡眠时长</span>
               </div>
-            ))}
+              {sleepPeriodGroups.map((group) => {
+                const rows = group.periods.length ? group.periods : [null]
+                return rows.map((period, index) => (
+                  <div key={`${group.date}-${period?.start || 'empty'}-${index}`} style={styles.sleepTableRow}>
+                    <span style={styles.dateCell}>{index === 0 ? group.date : ''}</span>
+                    <span style={styles.dateCell}>{period ? `${formatTime(period.start)} - ${formatTime(period.end)}` : '--'}</span>
+                    <span style={styles.metricCell}>{period ? formatDuration(period.duration_minutes) : '0分钟'}</span>
+                    <span style={styles.metricCell}>{index === 0 ? formatDuration(group.totalMinutes) : ''}</span>
+                  </div>
+                ))
+              })}
+            </div>
           </div>
         )}
       </section>
@@ -948,70 +954,65 @@ export default function Stats({ babyId }) {
       {/* 生长分析 */}
       <section style={styles.statsSection}>
         <h3 style={styles.sectionTitle}>生长分析（体重 + 身高）</h3>
-        <div style={styles.cards}>
-          <div style={styles.card}>
-            <span style={styles.cardLabel}>最新体重</span>
-            <span style={styles.cardValue}>{latestWeight == null ? '--' : `${latestWeight.toFixed(2)} kg`}</span>
+        <div style={styles.growthTables}>
+          <div style={styles.growthTableBlock}>
+            <div style={styles.growthTableTitle}>体重记录</div>
+            <div style={styles.growthTable}>
+              <div style={styles.growthTableRow}>
+                <span style={{ ...styles.th, ...styles.dateCell }}>记录日期</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>月龄</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>体重(斤)</span>
+              </div>
+              {weightRows.length ? weightRows.map((row) => (
+                <div key={row.id} style={styles.growthTableRow}>
+                  <span style={styles.dateCell}>{row.date}</span>
+                  <span style={styles.metricCell}>{row.age}</span>
+                  <span style={styles.metricCell}>{row.value}</span>
+                </div>
+              )) : (
+                <div style={styles.empty}>暂无体重记录</div>
+              )}
+            </div>
           </div>
-          <div style={styles.card}>
-            <span style={styles.cardLabel}>体重区间变化</span>
-            <span style={styles.cardValue}>
-              {weightDelta == null ? '--' : `${weightDelta > 0 ? '+' : ''}${weightDelta.toFixed(2)} kg`}
-            </span>
-          </div>
-          <div style={styles.card}>
-            <span style={styles.cardLabel}>最新身高</span>
-            <span style={styles.cardValue}>{latestHeight == null ? '--' : `${latestHeight.toFixed(1)} cm`}</span>
-          </div>
-          <div style={styles.card}>
-            <span style={styles.cardLabel}>身高区间变化</span>
-            <span style={styles.cardValue}>
-              {heightDelta == null ? '--' : `${heightDelta > 0 ? '+' : ''}${heightDelta.toFixed(1)} cm`}
-            </span>
-          </div>
-          <div style={styles.card}>
-            <span style={styles.cardLabel}>记录次数</span>
-            <span style={styles.cardValue}>
-              体重 {growthSeries.reduce((s, d) => s + (d.weight_count || 0), 0)} / 身高 {growthSeries.reduce((s, d) => s + (d.height_count || 0), 0)}
-            </span>
+          <div style={styles.growthTableBlock}>
+            <div style={styles.growthTableTitle}>身高记录</div>
+            <div style={styles.growthTable}>
+              <div style={styles.growthTableRow}>
+                <span style={{ ...styles.th, ...styles.dateCell }}>记录日期</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>月龄</span>
+                <span style={{ ...styles.th, ...styles.metricCell }}>身高(cm)</span>
+              </div>
+              {heightRows.length ? heightRows.map((row) => (
+                <div key={row.id} style={styles.growthTableRow}>
+                  <span style={styles.dateCell}>{row.date}</span>
+                  <span style={styles.metricCell}>{row.age}</span>
+                  <span style={styles.metricCell}>{row.value}</span>
+                </div>
+              )) : (
+                <div style={styles.empty}>暂无身高记录</div>
+              )}
+            </div>
           </div>
         </div>
         {growthSeries.length > 0 && (
-          <div style={styles.statsChartCard}>
-            <span style={styles.chartTitle}>每日身高体重趋势（按日均值）</span>
-            <GrowthLineChart data={growthSeries} />
+          <div style={styles.growthTrend}>
+            <button
+              type="button"
+              onClick={() => setShowGrowthChart(v => !v)}
+              style={styles.chartToggle}
+            >
+              {showGrowthChart ? '收起趋势图' : '展开趋势图'}
+            </button>
+            {showGrowthChart && (
+              <div style={styles.statsChartCard}>
+                <span style={styles.chartTitle}>每日身高体重趋势（按日均值）</span>
+                <GrowthLineChart data={growthSeries} />
+              </div>
+            )}
           </div>
         )}
       </section>
 
-      {/* 趋势明细 */}
-      <section style={styles.section}>
-        <h3 style={styles.sectionTitle}>趋势明细</h3>
-        <div style={styles.table}>
-          <div style={styles.tableRow}>
-            <span style={{ ...styles.th, ...styles.dateCell }}>日期</span>
-            <span style={{ ...styles.th, ...styles.metricCell }}>奶量</span>
-            <span style={{ ...styles.th, ...styles.metricCell }}>次数</span>
-            <span style={{ ...styles.th, ...styles.metricCell }}>睡眠</span>
-            <span style={{ ...styles.th, ...styles.metricCell }}>体重</span>
-            <span style={{ ...styles.th, ...styles.metricCell }}>身高</span>
-          </div>
-          {trendData.length ? (
-            [...trendData].reverse().map(row => (
-              <div key={row.date} style={styles.tableRow}>
-                <span style={styles.dateCell}>{row.date}</span>
-                <span style={styles.metricCell}>{row.total_ml || 0} ml</span>
-                <span style={styles.metricCell}>{row.feeding_count || 0} 次</span>
-                <span style={styles.metricCell}>{formatDuration(row.total_minutes)}</span>
-                <span style={styles.metricCell}>{row.avg_weight_kg == null ? '--' : `${Number(row.avg_weight_kg).toFixed(2)} kg`}</span>
-                <span style={styles.metricCell}>{row.avg_height_cm == null ? '--' : `${Number(row.avg_height_cm).toFixed(1)} cm`}</span>
-              </div>
-            ))
-          ) : (
-            <div style={styles.empty}>暂无数据</div>
-          )}
-        </div>
-      </section>
     </div>
   )
 }
@@ -1127,23 +1128,72 @@ const styles = {
     boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.7)',
   },
   chartTitle: { fontSize: '0.9rem', color: 'var(--stats-muted)', display: 'block', marginBottom: 4 },
+  growthTables: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gap: 14,
+  },
+  growthTableBlock: {
+    minWidth: 0,
+  },
+  growthTableTitle: {
+    fontSize: '0.92rem',
+    fontWeight: 600,
+    color: 'var(--stats-text)',
+    marginBottom: 8,
+  },
+  growthTable: {
+    background: 'var(--stats-surface)',
+    borderRadius: 14,
+    overflowX: 'auto',
+    border: '1px solid var(--stats-border)',
+  },
+  growthTableRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(102px, 1.15fr) minmax(82px, 0.9fr) minmax(86px, 0.85fr)',
+    alignItems: 'center',
+    columnGap: 10,
+    padding: '11px 14px',
+    borderBottom: '1px solid var(--stats-border)',
+    fontSize: '0.9rem',
+    minWidth: 310,
+  },
+  growthTrend: {
+    marginTop: 16,
+  },
+  chartToggle: {
+    width: '100%',
+    padding: '11px 14px',
+    borderRadius: 10,
+    background: 'var(--stats-surface)',
+    border: '1px solid var(--stats-border)',
+    color: 'var(--stats-text)',
+    fontSize: '0.9rem',
+    fontWeight: 600,
+    textAlign: 'center',
+  },
   periods: {
     marginTop: 16,
     paddingTop: 16,
     borderTop: '1px solid var(--stats-border)',
   },
   periodsTitle: { fontSize: '0.95rem', marginBottom: 12, color: 'var(--stats-muted)' },
-  periodItem: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    padding: '10px 0',
-    borderBottom: '1px solid var(--stats-border)',
-    fontSize: '0.95rem',
+  sleepTable: {
+    background: 'var(--stats-surface)',
+    borderRadius: 14,
+    overflowX: 'auto',
+    border: '1px solid var(--stats-border)',
   },
-  periodTime: { flex: 1 },
-  periodDur: { fontWeight: 500, color: '#85cdca' },
-  periodDate: { fontSize: '0.85rem', color: 'var(--stats-muted)' },
+  sleepTableRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(96px, 0.9fr) minmax(132px, 1.25fr) minmax(84px, 0.8fr) minmax(104px, 0.9fr)',
+    alignItems: 'center',
+    columnGap: 10,
+    padding: '11px 14px',
+    borderBottom: '1px solid var(--stats-border)',
+    fontSize: '0.9rem',
+    minWidth: 480,
+  },
   table: {
     background: 'var(--stats-surface)',
     borderRadius: 14,

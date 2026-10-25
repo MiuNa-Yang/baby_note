@@ -1,0 +1,155 @@
+diff --git a/agent/codex/session.go b/agent/codex/session.go
+index c620306..81b11aa 100644
+--- a/agent/codex/session.go
++++ b/agent/codex/session.go
+@@ -151,9 +151,10 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
+ 	cmd := exec.CommandContext(cs.ctx, bin, args...)
+ 	cmd.Dir = cs.workDir
+ 	prepareCmdForKill(cmd)
+-	if len(cs.extraEnv) > 0 {
+-		cmd.Env = core.MergeEnv(os.Environ(), cs.extraEnv)
+-	}
++	// Expose the immutable bridge message ID to child MCP servers. This lets
++	// business tools enforce durable idempotency without trusting model input.
++	turnEnv := append(append([]string{}, cs.extraEnv...), "CC_MESSAGE_ID="+messageID)
++	cmd.Env = core.MergeEnv(os.Environ(), turnEnv)
+ 	cmd.Stdin = strings.NewReader(prompt)
+ 
+ 	stdout, err := cmd.StdoutPipe()
+diff --git a/platform/weixin/weixin.go b/platform/weixin/weixin.go
+index 4153493..d8be899 100644
+--- a/platform/weixin/weixin.go
++++ b/platform/weixin/weixin.go
+@@ -14,6 +14,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 	"time"
++	"unicode"
+ 	"unicode/utf8"
+ 
+ 	"github.com/chenhg5/cc-connect/core"
+@@ -58,9 +59,10 @@ type Platform struct {
+ 	cdnBaseURL   string
+ 	allowFrom    string
+ 	routeTag     string
+-	stateDir     string
+-	longPollMS   int
+-	accountLabel string
++	stateDir           string
++	longPollMS         int
++	accountLabel       string
++	groupTriggerPrefix string
+ 
+ 	httpClient    *http.Client
+ 	cdnHttpClient *http.Client // 专用于 CDN 上传/下载，不走代理
+@@ -124,7 +126,7 @@ func sanitizePathSegment(s string) string {
+ }
+ 
+ // New constructs a Weixin platform. Required options: token.
+-// Optional: base_url, cdn_base_url (default https://novac2c.cdn.weixin.qq.com/c2c), allow_from, route_tag, account_id, long_poll_timeout_ms,
++// Optional: base_url, cdn_base_url (default https://novac2c.cdn.weixin.qq.com/c2c), allow_from, route_tag, account_id, long_poll_timeout_ms, group_trigger_prefix,
+ // state_dir (override persistence dir), proxy, cc_data_dir + cc_project (injected by main).
+ func New(opts map[string]any) (core.Platform, error) {
+ 	token, _ := opts["token"].(string)
+@@ -146,6 +148,8 @@ func New(opts map[string]any) (core.Platform, error) {
+ 		accountLabel = "default"
+ 	}
+ 	lp := pickInt(opts["long_poll_timeout_ms"])
++	groupTriggerPrefix, _ := opts["group_trigger_prefix"].(string)
++	groupTriggerPrefix = strings.TrimSpace(groupTriggerPrefix)
+ 
+ 	// Send-volume quota (see defaultBurstLimit constants). 0 disables the quota.
+ 	burstLimit := pickInt(opts["burst_limit"])
+@@ -202,9 +206,10 @@ func New(opts map[string]any) (core.Platform, error) {
+ 		cdnBaseURL:      cdnBaseURL,
+ 		allowFrom:       allowFrom,
+ 		routeTag:        routeTag,
+-		stateDir:        stateDir,
+-		longPollMS:      lp,
+-		accountLabel:    accountLabel,
++		stateDir:           stateDir,
++		longPollMS:         lp,
++		accountLabel:       accountLabel,
++		groupTriggerPrefix: groupTriggerPrefix,
+ 		httpClient:      httpClient,
+ 		cdnHttpClient:   cdnHttpClient,
+ 		tokens:          make(map[string]string),
+@@ -517,6 +522,12 @@ func (p *Platform) dispatchInbound(ctx context.Context, m *weixinMessage, h core
+ 	if strings.TrimSpace(body) == "" && len(images) == 0 && len(files) == 0 && audio == nil {
+ 		return
+ 	}
++	if filtered, ok := filterGroupTrigger(from, body, p.groupTriggerPrefix); !ok {
++		slog.Debug("weixin: group message ignored because trigger prefix is missing", "from", from)
++		return
++	} else {
++		body = filtered
++	}
+ 
+ 	rc := &replyContext{peerUserID: from, contextToken: strings.TrimSpace(m.ContextToken)}
+ 	msgID := fmt.Sprintf("%d", m.MessageID)
+@@ -538,6 +549,24 @@ func (p *Platform) dispatchInbound(ctx context.Context, m *weixinMessage, h core
+ 	})
+ }
+ 
++func filterGroupTrigger(from, body, prefix string) (string, bool) {
++	if prefix == "" || !strings.HasSuffix(strings.TrimSpace(from), "@chatroom") {
++		return body, true
++	}
++	trimmed := strings.TrimLeftFunc(body, unicode.IsSpace)
++	if !strings.HasPrefix(trimmed, prefix) {
++		return "", false
++	}
++	trimmed = strings.TrimPrefix(trimmed, prefix)
++	trimmed = strings.TrimLeftFunc(trimmed, func(r rune) bool {
++		return unicode.IsSpace(r) || r == ':' || r == '：'
++	})
++	if strings.TrimSpace(trimmed) == "" {
++		return "", false
++	}
++	return trimmed, true
++}
++
+ func mediaOnlyItems(items []messageItem) bool {
+ 	for _, it := range items {
+ 		switch it.Type {
+diff --git a/platform/weixin/weixin_test.go b/platform/weixin/weixin_test.go
+index faabdfe..549a462 100644
+--- a/platform/weixin/weixin_test.go
++++ b/platform/weixin/weixin_test.go
+@@ -27,6 +27,26 @@ func TestBodyFromItemList_Text(t *testing.T) {
+ 	}
+ }
+ 
++func TestFilterGroupTrigger(t *testing.T) {
++	tests := []struct {
++		name, from, body, prefix, want string
++		ok                            bool
++	}{
++		{"group accepts prefix", "123@chatroom", "0 刚喝了160", "0", "刚喝了160", true},
++		{"group accepts Chinese colon", "123@chatroom", "  0：醒了", "0", "醒了", true},
++		{"group ignores chatter", "123@chatroom", "今晚吃什么", "0", "", false},
++		{"direct message needs no prefix", "user@im.wechat", "醒了", "0", "醒了", true},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			got, ok := filterGroupTrigger(tt.from, tt.body, tt.prefix)
++			if got != tt.want || ok != tt.ok {
++				t.Fatalf("got (%q,%v), want (%q,%v)", got, ok, tt.want, tt.ok)
++			}
++		})
++	}
++}
++
+ func TestBodyFromItemList_VoiceText(t *testing.T) {
+ 	got := bodyFromItemList([]messageItem{
+ 		{Type: messageItemVoice, VoiceItem: &voiceItem{Text: "transcribed"}},
+diff --git a/daemon/check_linger_other.go b/daemon/check_linger_other.go
+index 38fca19..0b98450 100644
+--- a/daemon/check_linger_other.go
++++ b/daemon/check_linger_other.go
+@@ -1,4 +1,4 @@
+-//go:build !linux
++//go:build !linux && !windows
+ 
+ package daemon
+ 

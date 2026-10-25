@@ -55,11 +55,16 @@ export default function Home({ babyId }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <h1 style={styles.pageTitle}>总览中心</h1>
-      <OverviewCard overview={overview} babyId={babyId} onRefresh={refreshAll} />
+      <OverviewCard overview={overview} records={records} openSleep={openSleep} />
 
       <section>
         <h2 style={styles.sectionTitle}>快捷入口</h2>
-        <QuickAdd babyId={babyId} onAdd={refreshAll} openSleep={openSleep} />
+      <QuickAdd
+        babyId={babyId}
+        onAdd={refreshAll}
+        openSleep={openSleep}
+        supplementReminder={overview?.reminder?.supplements}
+      />
       </section>
 
       <section>
@@ -68,6 +73,7 @@ export default function Home({ babyId }) {
           babyId={babyId}
           records={records}
           onRefresh={refreshAll}
+          showSleepTimeRange={Number(overview?.reminder?.rule?.show_sleep_time_range ?? 1) === 1}
           hasMore={recordHasMore}
           loadingMore={recordsLoading}
           onLoadMore={() => loadRecords(false)}

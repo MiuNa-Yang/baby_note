@@ -1,16 +1,15 @@
 ﻿import { useState } from 'react'
 import { API } from '../App'
 import { getBeijingNowForInput, parseDateTime } from '../utils/date'
+import SolidMealFields, { buildSolidMealPayload, createSolidMealForm } from './SolidMealFields'
 
 const TYPES = [
   { type: 'feeding', label: '喂奶', icon: '🍼' },
-  { type: 'ad_supplement', label: 'AD补给', icon: '🌞' },
+  { type: 'solid_meal', label: '辅食', icon: '🥣' },
   { type: 'sleep', label: '睡眠', icon: '😴' },
   { type: 'diaper', label: '换尿布', icon: '👶' },
   { type: 'weight', label: '体重', icon: '⚖️' },
   { type: 'height', label: '身高', icon: '📏' },
-  { type: 'bath', label: '洗澡', icon: '🛁' },
-  { type: 'cards', label: '黑白卡', icon: '🃏' },
   { type: 'medication', label: '用药', icon: '💊' },
   { type: 'milestone', label: '里程碑', icon: '📌' },
 ]
@@ -46,7 +45,7 @@ function getDefaultFeedingAmount(records) {
   return nearestAmount
 }
 
-export default function QuickAdd({ babyId, onAdd, openSleep }) {
+export default function QuickAdd({ babyId, onAdd, openSleep, supplementReminder }) {
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({})
   const [toast, setToast] = useState('')
@@ -93,14 +92,9 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
       handleSleep()
       return
     }
-    if (type === 'ad_supplement') {
-      submit({
-        type: 'medication',
-        medicine_name: '维生素AD',
-        medicine_amount: '1次',
-        note: 'AD补给',
-      })
-      showToast('已记录 AD 补给')
+    if (type === 'solid_meal') {
+      setForm(createSolidMealForm())
+      setModal(type)
       return
     }
     if (type === 'diaper') {
@@ -133,6 +127,24 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
 
   const submit = (extra = {}) => {
     const payload = { baby_id: babyId, type: modal || extra.type, ...(modal ? form : {}), ...extra }
+    if (payload.type === 'solid_meal') {
+      const solidPayload = buildSolidMealPayload(form)
+      fetch(API + '/solid-meals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baby_id: babyId, ...solidPayload }),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data?.error) throw new Error(data.error)
+          setModal(null)
+          setForm({})
+          onAdd?.()
+          showToast('已记录辅食')
+        })
+        .catch(error => showToast(error.message || '保存失败'))
+      return
+    }
     if (payload.feeding_time) {
       payload.created_at = payload.created_at || toISOFromLocal(payload.feeding_time)
       delete payload.feeding_time
@@ -168,7 +180,31 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
   const sleepLabel = openSleep ? '醒来' : '睡眠'
   const visibleTypes = expanded
     ? TYPES
-    : TYPES.filter(t => ['feeding', 'ad_supplement', 'sleep', 'diaper', 'weight', 'height'].includes(t.type))
+    : TYPES.filter(t => ['feeding', 'solid_meal', 'sleep', 'diaper', 'weight', 'height'].includes(t.type))
+
+  const supplementButtons = (supplementReminder?.plan || []).map(item => ({
+    type: `supplement-${item.key}`,
+    label: supplementReminder.taken?.some(taken => taken.key === item.key) ? `${item.label} 已完成` : item.label,
+    icon: item.key === 'd3' ? '☀️' : item.key === 'dha' ? '🧠' : '🌞',
+    supplementKey: item.key,
+    done: supplementReminder.taken?.some(taken => taken.key === item.key),
+  }))
+
+  const recordSupplement = (key) => {
+    const medicineName = key === 'd3' ? '维生素D3' : key === 'dha' ? 'DHA' : '维生素AD'
+    fetch(API + '/records', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baby_id: babyId, type: 'medication', medicine_name: medicineName }),
+    })
+      .then(r => r.json())
+      .then(data => {
+        if (data?.error) throw new Error(data.error)
+        onAdd?.()
+        showToast(`已记录 ${medicineName}`)
+      })
+      .catch(error => showToast(error.message || '保存失败'))
+  }
 
   const openSleepManual = () => {
     setForm({
@@ -181,12 +217,14 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
   return (
     <>
       <div style={styles.grid}>
-        {visibleTypes.map(t => (
+        {[...visibleTypes, ...supplementButtons].map(t => (
           <button
             key={t.type}
-            onClick={() => quickAdd(t.type)}
+            onClick={() => t.supplementKey ? recordSupplement(t.supplementKey) : quickAdd(t.type)}
+            disabled={t.done}
             style={{
               ...styles.btn,
+              ...(t.done ? styles.btnDone : {}),
               ...(t.type === 'sleep' && openSleep ? styles.btnHighlight : {}),
             }}
           >
@@ -223,6 +261,15 @@ export default function QuickAdd({ babyId, onAdd, openSleep }) {
           onClose={() => setModal(null)}
           onSubmit={() => submit({ type: 'feeding' })}
         />
+      )}
+      {modal === 'solid_meal' && (
+        <Modal onClose={() => setModal(null)} title="记录辅食">
+          <SolidMealFields babyId={babyId} form={form} setForm={setForm} />
+          <div style={formStyles.btns}>
+            <button onClick={() => setModal(null)} style={formStyles.btnCancel}>取消</button>
+            <button onClick={() => submit({ type: 'solid_meal' })} style={formStyles.btnOk}>保存辅食</button>
+          </div>
+        </Modal>
       )}
       {modal === 'medication' && (
         <MedicationModal
@@ -684,6 +731,10 @@ const styles = {
   btnHighlight: {
     borderColor: 'var(--accent)',
     background: 'rgba(133, 205, 202, 0.15)',
+  },
+  btnDone: {
+    opacity: 0.58,
+    background: 'var(--bg)',
   },
   toggleWrap: {
     marginTop: 10,

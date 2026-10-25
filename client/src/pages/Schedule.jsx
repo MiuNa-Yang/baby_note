@@ -12,7 +12,7 @@ const DEFAULT_SCHEDULE = [
       '醒了不要立即抱起，让他在床上自己玩一会，培养专注力',
       '玩到宝宝叫了再去抱，边做边跟帅帅说话',
       '洗脸、涂面霜、换尿布',
-      '维生素AD 隔天早晨吃一次',
+      '周一至周六服用 D3，周日服用 AD 和 DHA',
     ],
   },
   {
@@ -151,26 +151,49 @@ const DEFAULT_SCHEDULE = [
 const DEFAULT_TIPS = [
   { icon: '🌡️', text: '室温保持 20℃ 左右；洗澡水温冬季 ≤39℃，夏季 37℃' },
   { icon: '🍼', text: '每天 7 餐奶，总奶量约 1000ml，不要强迫喂奶' },
-  { icon: '💊', text: '维生素 AD 隔天早晨吃一次（约 48 小时间隔）' },
+  { icon: '💊', text: '每周一至周六服用 D3，周日服用 AD 和 DHA' },
   { icon: '🤸', text: '每次吃奶半小时后多让宝宝趴趴，越趴越喜欢趴' },
   { icon: '💬', text: '做任何动作都要边做边跟帅帅说话，宝宝很喜欢聊天' },
 ]
 
+const DEFAULT_SAFETY_NOTES = [
+  { icon: '🚨', text: '宝宝无法哭、无法咳、无法呼吸或面色发紫时，立即呼救并拨打 120。' },
+  { icon: '👶', text: '1 岁以内疑似气道梗阻：交替进行 5 次背部拍击和 5 次胸部冲击。' },
+  { icon: '✋', text: '不要盲目用手指伸入口腔抠取异物；只有看得见且容易取出时才小心移除。' },
+  { icon: '🔎', text: '坚果、整颗葡萄、果冻、硬糖、小零件、电池、磁力珠等远离宝宝。' },
+  { icon: '🪑', text: '进食时保持坐姿并有人看护；不要让宝宝含着食物奔跑、哭闹或躺吃。' },
+]
+
 const LS_KEY = 'schedule_custom_v1'
+
+function normalizeCustom(data) {
+  return {
+    slots: data?.slots && typeof data.slots === 'object' ? data.slots : {},
+    tips: Array.isArray(data?.tips) ? data.tips : null,
+    safetyNotes: Array.isArray(data?.safetyNotes) ? data.safetyNotes : null,
+  }
+}
 
 function loadCustom() {
   try {
     const raw = localStorage.getItem(LS_KEY)
-    return raw ? JSON.parse(raw) : { slots: {}, tips: null }
+    return normalizeCustom(raw ? JSON.parse(raw) : null)
   } catch {
-    return { slots: {}, tips: null }
+    return normalizeCustom(null)
   }
 }
 
 function saveCustom(data) {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(data))
+    localStorage.setItem(LS_KEY, JSON.stringify(normalizeCustom(data)))
   } catch {}
+}
+
+function hasCustomData(data) {
+  const normalized = normalizeCustom(data)
+  return Object.keys(normalized.slots || {}).length > 0
+    || Array.isArray(normalized.tips)
+    || Array.isArray(normalized.safetyNotes)
 }
 
 function mergeSlot(slot, custom) {
@@ -179,6 +202,10 @@ function mergeSlot(slot, custom) {
   return {
     ...slot,
     label: c.label ?? slot.label,
+    startH: c.startH ?? slot.startH,
+    startM: c.startM ?? slot.startM,
+    endH: c.endH ?? slot.endH,
+    endM: c.endM ?? slot.endM,
     notes: c.notes ?? slot.notes,
   }
 }
@@ -199,6 +226,15 @@ function getCurrentSlot(schedule, now) {
 
 function formatTime(h, m) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function parseClockTime(value, fallbackH, fallbackM) {
+  const [h, m] = String(value || '').split(':').map(Number)
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return { h: fallbackH, m: fallbackM }
+  return {
+    h: Math.min(23, Math.max(0, h)),
+    m: Math.min(59, Math.max(0, m)),
+  }
 }
 
 function getProgress(slot, now) {
@@ -246,6 +282,8 @@ function inferFeedingHours(hourDist) {
 // ── SlotEditor 组件 ───────────────────────────────────────
 function SlotEditor({ slot, onSave, onCancel, onReset, isCustomized }) {
   const [label, setLabel] = useState(slot.label)
+  const [startTime, setStartTime] = useState(formatTime(slot.startH, slot.startM))
+  const [endTime, setEndTime] = useState(formatTime(slot.endH, slot.endM))
   const [notes, setNotes] = useState([...slot.notes])
 
   const updateNote = (i, val) => setNotes(prev => prev.map((n, idx) => idx === i ? val : n))
@@ -262,6 +300,27 @@ function SlotEditor({ slot, onSave, onCancel, onReset, isCustomized }) {
           onChange={e => setLabel(e.target.value)}
           placeholder="时间段标题"
         />
+      </div>
+
+      <div style={edStyles.timeGrid}>
+        <div style={edStyles.field}>
+          <label style={edStyles.label}>开始时间</label>
+          <input
+            type="time"
+            style={edStyles.input}
+            value={startTime}
+            onChange={e => setStartTime(e.target.value)}
+          />
+        </div>
+        <div style={edStyles.field}>
+          <label style={edStyles.label}>结束时间</label>
+          <input
+            type="time"
+            style={edStyles.input}
+            value={endTime}
+            onChange={e => setEndTime(e.target.value)}
+          />
+        </div>
       </div>
 
       <div style={edStyles.field}>
@@ -288,7 +347,18 @@ function SlotEditor({ slot, onSave, onCancel, onReset, isCustomized }) {
         )}
         <button
           style={edStyles.saveBtn}
-          onClick={() => onSave({ label: label.trim() || slot.label, notes: notes.filter(n => n.trim()) })}
+          onClick={() => {
+            const start = parseClockTime(startTime, slot.startH, slot.startM)
+            const end = parseClockTime(endTime, slot.endH, slot.endM)
+            onSave({
+              label: label.trim() || slot.label,
+              startH: start.h,
+              startM: start.m,
+              endH: end.h,
+              endM: end.m,
+              notes: notes.filter(n => n.trim()),
+            })
+          }}
         >
           保存
         </button>
@@ -346,78 +416,50 @@ function TipsEditor({ tips, onSave, onCancel, onReset, isCustomized }) {
 
 // ── 主组件 ────────────────────────────────────────────────
 export default function Schedule({ babyId }) {
-  const [now, setNow] = useState(new Date())
-  const [expanded, setExpanded] = useState(null)
-  const [stats, setStats] = useState(null)
   const [custom, setCustom] = useState(loadCustom)
-  // editingSlot: slot.id | null；editingTips: boolean
-  const [editingSlot, setEditingSlot] = useState(null)
   const [editingTips, setEditingTips] = useState(false)
-
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 60 * 1000)
-    return () => clearInterval(t)
-  }, [])
+  const [editingSafety, setEditingSafety] = useState(false)
 
   useEffect(() => {
     if (!babyId) return
-    const fetchStats = () => {
-      fetch(`${API}/schedule-stats?baby_id=${babyId}`)
-        .then(r => r.json())
-        .then(setStats)
-        .catch(() => {})
-    }
-    fetchStats()
-    const t = setInterval(fetchStats, 60 * 1000)
-    const onVisible = () => { if (document.visibilityState === 'visible') fetchStats() }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      clearInterval(t)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
+    const localCustom = loadCustom()
+    fetch(`${API}/schedule-custom?baby_id=${babyId}`)
+      .then(r => r.json())
+      .then(data => {
+        const remoteCustom = normalizeCustom(data?.payload)
+        if (data?.updated_at) {
+          setCustom(remoteCustom)
+          saveCustom(remoteCustom)
+          return
+        }
+
+        if (hasCustomData(localCustom)) {
+          fetch(`${API}/schedule-custom`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baby_id: babyId, payload: localCustom }),
+          }).catch(() => {})
+          setCustom(localCustom)
+        }
+      })
+      .catch(() => {})
   }, [babyId])
 
   const persistCustom = useCallback((next) => {
-    setCustom(next)
-    saveCustom(next)
-  }, [])
+    const normalized = normalizeCustom(next)
+    setCustom(normalized)
+    saveCustom(normalized)
+    if (babyId) {
+      fetch(`${API}/schedule-custom`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baby_id: babyId, payload: normalized }),
+      }).catch(() => {})
+    }
+  }, [babyId])
 
-  // 合并 custom 到 schedule
-  const schedule = DEFAULT_SCHEDULE.map(s => mergeSlot(s, custom))
   const tips = custom.tips ?? DEFAULT_TIPS
-
-  const current = getCurrentSlot(schedule, now)
-  const progress = getProgress(current, now)
-  const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
-  const idx = schedule.findIndex(s => s.id === current.id)
-  const next = schedule[(idx + 1) % schedule.length]
-
-  const feedingHours = stats ? inferFeedingHours(stats.feeding?.hour_distribution) : []
-  const ad = stats?.ad
-  const adDue = ad?.is_due
-  const adText = ad?.last_at
-    ? adDue
-      ? `已逾期 ${Math.floor((ad.overdue_minutes || 0) / 60)}小时`
-      : `${Math.floor((ad.remaining_minutes || 0) / 60)}小时后`
-    : '暂无记录，建议今天吃'
-  const poop = stats?.poop
-  const poopText = poop?.last_at ? formatRelTime(poop.last_at) : '暂无记录'
-  const poopAlert = poop?.hours_ago != null && poop.hours_ago > 24
-  const feeding = stats?.feeding
-
-  // ── handlers ──
-  const handleSlotSave = (slotId, data) => {
-    const next = { ...custom, slots: { ...custom.slots, [slotId]: data } }
-    persistCustom(next)
-    setEditingSlot(null)
-  }
-
-  const handleSlotReset = (slotId) => {
-    const slots = { ...custom.slots }
-    delete slots[slotId]
-    persistCustom({ ...custom, slots })
-    setEditingSlot(null)
-  }
+  const safetyNotes = custom.safetyNotes ?? DEFAULT_SAFETY_NOTES
 
   const handleTipsSave = (newTips) => {
     persistCustom({ ...custom, tips: newTips })
@@ -429,197 +471,52 @@ export default function Schedule({ babyId }) {
     setEditingTips(false)
   }
 
-  const toggleSlot = (slotId) => {
-    if (editingSlot === slotId) return  // 编辑中不折叠
-    setExpanded(prev => prev === slotId ? null : slotId)
-    setEditingSlot(null)
+  const handleSafetySave = (newNotes) => {
+    persistCustom({ ...custom, safetyNotes: newNotes })
+    setEditingSafety(false)
   }
 
-  const startEditSlot = (e, slotId) => {
-    e.stopPropagation()
-    setExpanded(slotId)
-    setEditingSlot(slotId)
+  const handleSafetyReset = () => {
+    persistCustom({ ...custom, safetyNotes: null })
+    setEditingSafety(false)
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <h1 style={styles.pageTitle}>护理日程</h1>
-
-      {/* 当前时段 */}
-      <div style={styles.currentCard}>
-        <div style={styles.currentHeader}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '1.6rem' }}>{current.icon}</span>
-            <div>
-              <div style={styles.currentLabel}>现在应该</div>
-              <div style={styles.currentTitle}>{current.label}</div>
-            </div>
-          </div>
-          <div style={styles.clockBadge}>{timeStr}</div>
-        </div>
-
-        {progress !== null && (
-          <div style={styles.progressBar}>
-            <div style={{ ...styles.progressFill, width: `${progress}%` }} />
-          </div>
-        )}
-
-        <div style={styles.noteList}>
-          {current.notes.map((n, i) => (
-            <div key={i} style={styles.noteItem}>
-              <span style={styles.noteDot}>•</span>
-              <span>{n}</span>
-            </div>
-          ))}
-        </div>
-
-        {!current.isNight && (
-          <div style={styles.nextHint}>
-            下一阶段：{next.icon} {next.label}（{formatTime(next.startH, next.startM)}）
-          </div>
-        )}
-      </div>
-
-      {/* 今日状态 */}
+      {/* 注意安全事项 */}
       <section>
-        <h2 style={styles.sectionTitle}>今日状态</h2>
-        <div style={styles.statusGrid}>
-          <div style={styles.statusCard}>
-            <div style={styles.statusIcon}>🍼</div>
-            <div style={styles.statusLabel}>今日喂奶</div>
-            <div style={styles.statusValue}>{feeding ? `${feeding.today_count}次` : '--'}</div>
-            <div style={styles.statusSub}>{feeding ? `共 ${feeding.today_total_ml}ml` : ''}</div>
-            {feeding?.today_times?.length > 0 && (
-              <div style={styles.feedingTimes}>
-                {feeding.today_times.map((t, i) => (
-                  <span key={i} style={styles.feedingTimeBadge}>
-                    {t.time}{t.amount_ml ? ` ${t.amount_ml}ml` : ''}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div style={{ ...styles.statusCard, ...(adDue ? styles.statusCardAlert : {}) }}>
-            <div style={styles.statusIcon}>💊</div>
-            <div style={styles.statusLabel}>维生素AD</div>
-            <div style={{ ...styles.statusValue, fontSize: '0.9rem' }}>
-              {adDue ? '⚠️ 该吃了' : (ad?.last_at ? '✓ 已吃' : '待记录')}
-            </div>
-            <div style={styles.statusSub}>
-              {ad?.last_at ? `上次：${formatHourMin(ad.last_at)} · ${formatRelTime(ad.last_at)}` : ''}
-            </div>
-            <div style={{ ...styles.statusSub, color: adDue ? '#e53e3e' : 'var(--text-muted)' }}>
-              {adText}
-            </div>
-          </div>
-
-          <div style={{ ...styles.statusCard, ...(poopAlert ? styles.statusCardAlert : {}) }}>
-            <div style={styles.statusIcon}>💩</div>
-            <div style={styles.statusLabel}>最近大便</div>
-            <div style={{ ...styles.statusValue, fontSize: '0.9rem' }}>
-              {poopAlert ? '⚠️ 超24小时' : (poop?.last_at ? formatHourMin(poop.last_at) : '暂无')}
-            </div>
-            <div style={styles.statusSub}>{poopText}</div>
-            {poop?.avg_daily != null && (
-              <div style={styles.statusSub}>近7天均 {poop.avg_daily}次/天</div>
-            )}
-          </div>
+        <div style={styles.sectionHeader}>
+          <h2 style={{ ...styles.sectionTitle, marginBottom: 0 }}>注意安全事项</h2>
+          {!editingSafety && (
+            <button style={styles.editBtn} onClick={() => setEditingSafety(true)}>
+              ✏️ 编辑
+            </button>
+          )}
         </div>
-      </section>
-
-      {/* 历史喂奶规律 */}
-      {feedingHours.length > 0 && (
-        <section>
-          <h2 style={styles.sectionTitle}>近7天喂奶规律</h2>
-          <div style={styles.infoCard}>
-            <div style={styles.infoText}>根据历史记录，宝宝通常在以下时间段喂奶：</div>
-            <div style={styles.hourBadges}>
-              {feedingHours.map(h => {
-                const isCurrentHour = now.getHours() === h
-                return (
-                  <span key={h} style={{ ...styles.hourBadge, ...(isCurrentHour ? styles.hourBadgeActive : {}) }}>
-                    {String(h).padStart(2, '0')}:xx
-                  </span>
-                )
-              })}
+        <div style={styles.safetyWarning}>
+          危险都发生在一瞬间!重视一切安全隐患，以下内容熟记于心。
+        </div>
+        <div style={{ marginTop: 12 }}>
+          {editingSafety ? (
+            <div style={styles.tipsCard}>
+              <TipsEditor
+                tips={safetyNotes}
+                isCustomized={Boolean(custom.safetyNotes)}
+                onSave={handleSafetySave}
+                onCancel={() => setEditingSafety(false)}
+                onReset={handleSafetyReset}
+              />
             </div>
-          </div>
-        </section>
-      )}
-
-      {/* 全天时间表 */}
-      <section>
-        <h2 style={styles.sectionTitle}>全天时间表</h2>
-        <div style={styles.scheduleList}>
-          {schedule.filter(s => !s.isNight).map((slot) => {
-            const isCurrent = slot.id === current.id
-            const isOpen = expanded === slot.id
-            const isEditing = editingSlot === slot.id
-            const isCustomized = Boolean(custom.slots?.[slot.id])
-
-            return (
-              <div
-                key={slot.id}
-                style={{
-                  ...styles.slotCard,
-                  ...(isCurrent ? styles.slotCardActive : {}),
-                  ...(isEditing ? styles.slotCardEditing : {}),
-                }}
-                onClick={() => !isEditing && toggleSlot(slot.id)}
-              >
-                <div style={styles.slotHeader}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: '1.1rem' }}>{slot.icon}</span>
-                    <div>
-                      <span style={styles.slotTime}>
-                        {formatTime(slot.startH, slot.startM)}–{formatTime(slot.endH, slot.endM)}
-                      </span>
-                      <span style={styles.slotLabel}> {slot.label}</span>
-                      {isCustomized && <span style={styles.customDot} title="已自定义"> ✎</span>}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {isCurrent && !isEditing && <span style={styles.activeBadge}>进行中</span>}
-                    {isOpen && !isEditing && (
-                      <button
-                        style={styles.editBtn}
-                        onClick={e => startEditSlot(e, slot.id)}
-                      >
-                        ✏️ 编辑
-                      </button>
-                    )}
-                    {!isEditing && (
-                      <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                        {isOpen ? '▲' : '▼'}
-                      </span>
-                    )}
-                  </div>
+          ) : (
+            <div style={styles.tipsCard}>
+              {safetyNotes.map((tip, i) => (
+                <div key={i} style={styles.tipItem}>
+                  <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{tip.icon}</span>
+                  <span style={{ fontSize: '0.875rem' }}>{tip.text}</span>
                 </div>
-
-                {isOpen && !isEditing && (
-                  <div style={styles.slotNotes}>
-                    {slot.notes.map((n, i) => (
-                      <div key={i} style={styles.noteItem}>
-                        <span style={styles.noteDot}>•</span>
-                        <span style={{ fontSize: '0.875rem' }}>{n}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {isEditing && (
-                  <SlotEditor
-                    slot={slot}
-                    isCustomized={isCustomized}
-                    onSave={(data) => handleSlotSave(slot.id, data)}
-                    onCancel={() => setEditingSlot(null)}
-                    onReset={() => handleSlotReset(slot.id)}
-                  />
-                )}
-              </div>
-            )
-          })}
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
@@ -656,6 +553,7 @@ export default function Schedule({ babyId }) {
           )}
         </div>
       </section>
+
     </div>
   )
 }
@@ -674,6 +572,11 @@ const edStyles = {
     display: 'flex',
     flexDirection: 'column',
     gap: 6,
+  },
+  timeGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 8,
   },
   label: {
     fontSize: '0.78rem',
@@ -832,6 +735,17 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 0,
+  },
+  safetyWarning: {
+    marginTop: 12,
+    padding: '12px 14px',
+    borderRadius: 12,
+    border: '1px solid #f6c06a',
+    background: '#fff7e8',
+    color: '#9a4d00',
+    fontSize: '1.05rem',
+    fontWeight: 800,
+    lineHeight: 1.45,
   },
   statusGrid: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 },
   statusCard: {

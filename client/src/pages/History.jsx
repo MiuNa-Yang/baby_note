@@ -7,8 +7,9 @@ const TYPE_LABELS = {
   feeding: '喂奶',
   diaper: '换尿布',
   bath: '洗澡',
-  cards: '黑白卡',
   sleep: '睡眠',
+  weight: '体重',
+  height: '身高',
   medication: '用药',
   milestone: '里程碑',
 }
@@ -18,6 +19,7 @@ export default function History({ babyId }) {
   const [filter, setFilter] = useState('')
   const [dateFrom, setDateFrom] = useState(() => getBeijingDateDaysAgo(7))
   const [dateTo, setDateTo] = useState(() => getBeijingDate())
+  const [showSleepTimeRange, setShowSleepTimeRange] = useState(true)
 
   const load = () => {
     if (!babyId) return
@@ -27,6 +29,16 @@ export default function History({ babyId }) {
   }
 
   useEffect(load, [babyId, filter, dateFrom, dateTo])
+
+  useEffect(() => {
+    fetch(API + '/reminder-rules')
+      .then(r => r.json())
+      .then(data => {
+        const currentRule = Array.isArray(data) ? data[0] : null
+        setShowSleepTimeRange(Number(currentRule?.show_sleep_time_range ?? 1) === 1)
+      })
+      .catch(() => setShowSleepTimeRange(true))
+  }, [])
 
   if (!babyId) return null
 
@@ -72,7 +84,11 @@ export default function History({ babyId }) {
         </div>
       </div>
 
-      <RecordList records={records} onRefresh={load} />
+      <RecordList
+        records={records}
+        onRefresh={load}
+        showSleepTimeRange={showSleepTimeRange}
+      />
     </div>
   )
 }

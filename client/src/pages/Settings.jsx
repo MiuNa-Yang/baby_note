@@ -1,6 +1,7 @@
 ﻿import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { API } from '../App'
+import AgentSettingsPanel from '../components/AgentSettingsPanel'
 
 export default function Settings({ babyId }) {
   const [themeMode, setThemeMode] = useState(() => {
@@ -101,6 +102,9 @@ export default function Settings({ babyId }) {
       body: JSON.stringify({
         feeding_interval_hours: Number(rule.feeding_interval_hours || 0),
         feeding_interval_minutes: Number(rule.feeding_interval_minutes || 0),
+        awake_interval_hours: Number(rule.awake_interval_hours || 0),
+        awake_interval_minutes: Number(rule.awake_interval_minutes || 0),
+        show_sleep_time_range: Number(rule.show_sleep_time_range ?? 1) === 1,
       }),
     })
       .then(r => r.json())
@@ -189,6 +193,83 @@ export default function Settings({ babyId }) {
             />
           </div>
         </div>
+      </section>
+
+      <section style={styles.section}>
+        <h2 style={styles.title}>睡眠设置</h2>
+        <p style={styles.hint}>清醒间隔用于计算总览中的下次入睡时间。</p>
+        <div style={styles.ruleCard}>
+          <div style={styles.ruleHeader}>
+            <span style={styles.ruleLabel}>睡眠展示与提醒</span>
+            <button
+              onClick={saveRule}
+              style={styles.saveBtn}
+              disabled={saving || !rule?.id}
+            >
+              {saving ? '保存中...' : '保存'}
+            </button>
+          </div>
+          <div style={styles.ruleRow}>
+            <label>清醒间隔（小时）</label>
+            <input
+              type="number"
+              min="0"
+              max="24"
+              step="1"
+              value={rule?.awake_interval_hours ?? 2}
+              onChange={e => updateLocalRule('awake_interval_hours', e.target.value)}
+              style={styles.numInput}
+            />
+          </div>
+          <div style={styles.ruleRow}>
+            <label>清醒间隔（分钟）</label>
+            <input
+              type="number"
+              min="0"
+              max="59"
+              step="1"
+              value={rule?.awake_interval_minutes ?? 15}
+              onChange={e => updateLocalRule('awake_interval_minutes', e.target.value)}
+              style={styles.numInput}
+            />
+          </div>
+          <div style={{ ...styles.ruleRow, ...styles.toggleSettingRow }}>
+            <div style={styles.settingCopy}>
+              <span>显示睡眠时间区间</span>
+              <span style={styles.settingHint}>在最新动态和时间线中显示入睡、醒来时间</span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={Number(rule?.show_sleep_time_range ?? 1) === 1}
+              aria-label="显示睡眠时间区间"
+              onClick={() => updateLocalRule(
+                'show_sleep_time_range',
+                Number(rule?.show_sleep_time_range ?? 1) === 1 ? 0 : 1,
+              )}
+              style={{
+                ...styles.switchToggle,
+                background: Number(rule?.show_sleep_time_range ?? 1) === 1
+                  ? 'var(--primary)'
+                  : 'var(--border)',
+              }}
+            >
+              <span
+                style={{
+                  ...styles.switchKnob,
+                  transform: Number(rule?.show_sleep_time_range ?? 1) === 1
+                    ? 'translateX(24px)'
+                    : 'translateX(2px)',
+                }}
+              />
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section style={styles.section}>
+        <h2 style={styles.title}>个人 Agent</h2>
+        <AgentSettingsPanel babyId={babyId} />
       </section>
 
       <section style={styles.section}>
@@ -284,6 +365,46 @@ const styles = {
     alignItems: 'center',
     marginBottom: 8,
     gap: 8,
+  },
+  toggleSettingRow: {
+    marginTop: 12,
+    marginBottom: 0,
+    paddingTop: 12,
+    borderTop: '1px solid var(--border)',
+  },
+  settingCopy: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 3,
+    minWidth: 0,
+  },
+  settingHint: {
+    color: 'var(--text-muted)',
+    fontSize: '0.76rem',
+    lineHeight: 1.35,
+  },
+  switchToggle: {
+    width: 48,
+    height: 26,
+    flex: '0 0 48px',
+    padding: 0,
+    borderRadius: 999,
+    position: 'relative',
+    minWidth: 0,
+    minHeight: 0,
+    transition: 'background 0.2s ease',
+    boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.06)',
+  },
+  switchKnob: {
+    position: 'absolute',
+    top: 2,
+    left: 0,
+    width: 22,
+    height: 22,
+    borderRadius: '50%',
+    background: '#fff',
+    boxShadow: '0 1px 5px rgba(0,0,0,0.22)',
+    transition: 'transform 0.2s cubic-bezier(.2,.8,.2,1)',
   },
   numInput: {
     width: 80,

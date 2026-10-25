@@ -5,6 +5,9 @@ import cors from 'cors';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { initDb, db } from './db.js';
+import { createAgentRouter } from './agent/routes.js';
+import { createAgentOpenAiRouter } from './agent/openai-api.js';
+import { takeoverSound } from './agent/takeover-sound.js';
 import {
   askGuideAi,
   askGuideAiStream,
@@ -46,6 +49,13 @@ app.use((req, res, next) => {
   log(`${req.method} ${req.url}`);
   next();
 });
+
+app.use('/v1', createAgentOpenAiRouter(db));
+const takeoverWav = takeoverSound();
+app.get('/agent-takeover.wav', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=86400').type('audio/wav').send(takeoverWav);
+});
+app.use('/api', createAgentRouter(db));
 
 function parseDbDateTime(value) {
   if (!value) return null;
@@ -104,32 +114,65 @@ function computeRecent24hFeedingStats(babyId, now = new Date()) {
   return { count, totalMl: Math.round(totalMl) };
 }
 
-function computeFeedingReminder({ rules, lastFeedingAt, now }) {
-  if (!rules) {
-    return {
-      intervalMinutes: null,
-      nextFeedingAt: null,
-      remainingMinutes: null,
-      overdueMinutes: 0,
-      isFeedingDue: false,
-    };
+const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function getBeijingParts(date) {
+  const shifted = new Date(date.getTime() + BEIJING_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    date: shifted.getUTCDate(),
+    hour: shifted.getUTCHours(),
+    minute: shifted.getUTCMinutes(),
+  };
+}
+
+function atBeijingTime(base, hour, minute = 0) {
+  const p = getBeijingParts(base);
+  return new Date(Date.UTC(p.year, p.month, p.date, hour, minute, 0, 0) - BEIJING_OFFSET_MS);
+}
+
+function normalizeClientDateTime(value) {
+  if (!value) return null;
+  const text = String(value).trim();
+  const localMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (localMatch) {
+    const [, year, month, day, hour, minute, second = '0'] = localMatch;
+    return new Date(Date.UTC(
+      Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)
+    ) - BEIJING_OFFSET_MS).toISOString();
+  }
+  const parsed = parseRecordDateFlexible(text);
+  return parsed && !Number.isNaN(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+function sameBeijingDate(a, b) {
+  const ap = getBeijingParts(a);
+  const bp = getBeijingParts(b);
+  return ap.year === bp.year && ap.month === bp.month && ap.date === bp.date;
+}
+
+function computeFeedingReminder({ lastFeedingAt, now }) {
+  const intervalMinutes = 180;
+  const { hour } = getBeijingParts(now);
+  let nextFeedingAt = null;
+
+  if (hour >= 18) {
+    nextFeedingAt = atBeijingTime(now, 24);
+  } else if (hour < 5) {
+    nextFeedingAt = atBeijingTime(now, 5);
+  } else {
+    const dayStart = atBeijingTime(now, 5);
+    const dayEnd = atBeijingTime(now, 18);
+    const hasDaytimeFeeding = lastFeedingAt
+      && sameBeijingDate(lastFeedingAt, now)
+      && lastFeedingAt >= dayStart
+      && lastFeedingAt < dayEnd;
+    const baseTime = hasDaytimeFeeding ? lastFeedingAt : now;
+    const candidate = new Date(baseTime.getTime() + intervalMinutes * 60000);
+    nextFeedingAt = candidate < dayEnd ? candidate : atBeijingTime(now, 24);
   }
 
-  const feedingHours = Number(rules.feeding_interval_hours || 0);
-  const feedingMinutes = Number(rules.feeding_interval_minutes || 0);
-  const intervalMinutes = Math.max(0, Math.round(feedingHours * 60 + feedingMinutes));
-  if (intervalMinutes <= 0) {
-    return {
-      intervalMinutes: 0,
-      nextFeedingAt: null,
-      remainingMinutes: null,
-      overdueMinutes: 0,
-      isFeedingDue: false,
-    };
-  }
-
-  const baseTime = lastFeedingAt || now;
-  const nextFeedingAt = new Date(baseTime.getTime() + intervalMinutes * 60000);
   const diffMs = nextFeedingAt.getTime() - now.getTime();
   const remainingMinutes = diffMs >= 0 ? Math.ceil(diffMs / 60000) : Math.floor(diffMs / 60000);
 
@@ -142,48 +185,241 @@ function computeFeedingReminder({ rules, lastFeedingAt, now }) {
   };
 }
 
-function isAdSupplementRecord(record) {
-  const text = [
-    record?.medicine_name || '',
-    record?.medicine_amount || '',
-    record?.note || '',
-  ]
-    .join(' ')
-    .toLowerCase();
+const SOLID_REACTIONS = [
+  { key: 'vomiting', label: '呕吐' },
+  { key: 'diarrhea', label: '腹泻' },
+  { key: 'constipation', label: '便秘' },
+  { key: 'perioral_rash', label: '嘴周红疹' },
+  { key: 'generalized_rash', label: '全身红疹' },
+  { key: 'bloating_abdominal_pain', label: '腹胀/腹痛' },
+  { key: 'other', label: '其他' },
+];
 
-  return (
-    text.includes('维生素ad') ||
-    text.includes('维生素 ad') ||
-    text.includes('ad补给') ||
-    text.includes('ad supplement') ||
-    /\bad\b/.test(text)
-  );
+const DEFAULT_SOLID_FOODS = [
+  ['大米', '谷物', null], ['小米', '谷物', null], ['燕麦', '谷物', null], ['小麦', '谷物', '小麦'],
+  ['玉米', '谷物', null], ['红薯', '谷物', null], ['土豆', '谷物', null],
+  ['南瓜', '蔬菜', null], ['胡萝卜', '蔬菜', null], ['西兰花', '蔬菜', null], ['菠菜', '蔬菜', null],
+  ['菜花', '蔬菜', null], ['豌豆', '蔬菜', null], ['番茄', '蔬菜', null],
+  ['香蕉', '水果', null], ['苹果', '水果', null], ['梨', '水果', null], ['牛油果', '水果', null],
+  ['桃', '水果', null], ['草莓', '水果', null],
+  ['鸡肉', '肉禽', null], ['猪肉', '肉禽', null], ['牛肉', '肉禽', null], ['羊肉', '肉禽', null],
+  ['鸡蛋', '蛋奶', '鸡蛋'], ['牛奶', '蛋奶', '牛奶'], ['酸奶', '蛋奶', '牛奶'],
+  ['豆腐', '豆类', '大豆'], ['黄豆', '豆类', '大豆'],
+  ['鳕鱼', '鱼虾', '鱼类'], ['三文鱼', '鱼虾', '鱼类'], ['虾', '鱼虾', '甲壳类'],
+  ['花生', '坚果/种子', '花生'], ['芝麻', '坚果/种子', '芝麻'], ['核桃', '坚果/种子', '树坚果'],
+];
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-function computeAdReminder({ lastAdAt, now, intervalMinutes = 48 * 60 }) {
-  const fixedInterval = Math.max(0, Number(intervalMinutes || 0));
-  if (!lastAdAt) {
-    return {
-      intervalMinutes: fixedInterval,
-      lastAdAt: null,
-      nextAdAt: now.toISOString(),
-      remainingMinutes: 0,
-      overdueMinutes: 0,
-      isAdDue: true,
-    };
+function ensureSolidFoodCatalog(babyId) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO solid_foods (baby_id, name, category, allergen_group)
+    VALUES (?, ?, ?, ?)
+  `);
+  const transaction = db.transaction(() => {
+    for (const [name, category, allergenGroup] of DEFAULT_SOLID_FOODS) {
+      insert.run(babyId, name, category, allergenGroup);
+    }
+  });
+  transaction();
+}
+
+function normalizeSolidReactionKeys(value) {
+  const allowed = new Set(SOLID_REACTIONS.map((item) => item.key));
+  const keys = [...new Set(parseJsonArray(value).map((item) => String(item)).filter((item) => allowed.has(item)))];
+  return keys;
+}
+
+function supplementKey(record) {
+  const text = [record?.medicine_name || '', record?.medicine_amount || '', record?.note || '']
+    .join(' ')
+    .toLowerCase()
+    .replaceAll(' ', '');
+  if (text.includes('dha')) return 'dha';
+  if (text.includes('维生素d3') || text.includes('维生素d') || /(^|[^a-z])d3([^a-z]|$)/.test(text)) return 'd3';
+  if (text.includes('维生素ad') || text.includes('ad补给') || text.includes('adsupplement') || /(^|[^a-z])ad([^a-z]|$)/.test(text)) return 'ad';
+  return null;
+}
+
+function getSupplementPlan(now = new Date()) {
+  const shifted = new Date(now.getTime() + BEIJING_OFFSET_MS);
+  const weekday = shifted.getUTCDay();
+  const plan = weekday === 0
+    ? [{ key: 'ad', label: 'AD' }, { key: 'dha', label: 'DHA' }]
+    : [{ key: 'd3', label: 'D3' }];
+  return { weekday, plan };
+}
+
+function getSupplementReminder(babyId, now = new Date()) {
+  const { weekday, plan } = getSupplementPlan(now);
+  const today = getBeijingDate(now);
+  const records = db.prepare(`
+    SELECT id, created_at, medicine_name, medicine_amount, note
+    FROM records
+    WHERE baby_id = ? AND type = 'medication'
+      AND date(created_at, '+8 hours') = date(?)
+    ORDER BY created_at DESC, id DESC
+  `).all(babyId, today);
+  const takenKeys = [...new Set(records.map(supplementKey).filter(Boolean))];
+  const taken = plan.filter((item) => takenKeys.includes(item.key));
+  const pending = plan.filter((item) => !takenKeys.includes(item.key));
+  return {
+    date: today,
+    weekday,
+    plan,
+    taken,
+    pending,
+    isComplete: pending.length === 0,
+  };
+}
+
+function formatSolidMeal(row) {
+  return {
+    ...row,
+    solid_items: parseJsonArray(row.solid_items_json),
+    reaction_types: normalizeSolidReactionKeys(row.reaction_types_json),
+    suspected_food_ids: parseJsonArray(row.suspected_food_ids_json).map(Number).filter(Number.isFinite),
+  };
+}
+
+function getSolidMeals(babyId, dateFrom, dateTo) {
+  let sql = `SELECT * FROM records WHERE baby_id = ? AND type = 'solid_meal'`;
+  const params = [babyId];
+  if (dateFrom) { sql += ` AND date(created_at, '+8 hours') >= date(?)`; params.push(dateFrom); }
+  if (dateTo) { sql += ` AND date(created_at, '+8 hours') <= date(?)`; params.push(dateTo); }
+  sql += ' ORDER BY created_at DESC, id DESC';
+  return db.prepare(sql).all(...params).map(formatSolidMeal);
+}
+
+function solidDateKey(value) {
+  const date = parseRecordDateFlexible(value);
+  return date ? getBeijingDate(date) : '';
+}
+
+function deriveSolidFoodSummary(babyId) {
+  ensureSolidFoodCatalog(babyId);
+  const foods = db.prepare('SELECT * FROM solid_foods WHERE baby_id = ? ORDER BY category, name').all(babyId);
+  const stats = new Map(foods.map((food) => [Number(food.id), {
+    attempts: 0,
+    totalGrams: 0,
+    lastTriedAt: null,
+    latestReactions: [],
+    linkedReaction: false,
+    unattributedReaction: false,
+  }]));
+
+  for (const meal of getSolidMeals(babyId)) {
+    const reactions = meal.reaction_types || [];
+    const suspected = new Set(meal.suspected_food_ids || []);
+    for (const item of meal.solid_items || []) {
+      const foodId = Number(item.food_id);
+      const stat = stats.get(foodId);
+      if (!stat) continue;
+      stat.attempts += 1;
+      stat.totalGrams += Number(item.grams || 0);
+      if (!stat.lastTriedAt || new Date(meal.created_at).getTime() > new Date(stat.lastTriedAt).getTime()) {
+        stat.lastTriedAt = meal.created_at;
+      }
+      if (reactions.length && suspected.has(foodId)) {
+        stat.linkedReaction = true;
+        stat.latestReactions = reactions;
+      } else if (reactions.length) {
+        stat.unattributedReaction = true;
+      }
+    }
   }
 
-  const nextAdAt = new Date(lastAdAt.getTime() + fixedInterval * 60000);
-  const diffMs = nextAdAt.getTime() - now.getTime();
-  const remainingMinutes = diffMs >= 0 ? Math.ceil(diffMs / 60000) : Math.floor(diffMs / 60000);
+  return foods.map((food) => {
+    const stat = stats.get(Number(food.id));
+    let status = 'unknown';
+    let statusLabel = '未尝试 / 待判断';
+    let statusSource = 'derived';
+    if (food.manual_status === 'confirmed_allergy') {
+      status = 'confirmed_allergy';
+      statusLabel = '已确认过敏';
+      statusSource = 'manual';
+    } else if (food.manual_status === 'confirmed_safe') {
+      status = 'confirmed_safe';
+      statusLabel = '已确认无异常';
+      statusSource = 'manual';
+    } else if (stat.linkedReaction) {
+      status = 'suspected';
+      statusLabel = '疑似异常';
+    } else if (stat.attempts > 0 && !stat.unattributedReaction) {
+      status = 'no_reaction';
+      statusLabel = '暂无异常记录';
+    }
+    return {
+      ...food,
+      attempts: stat.attempts,
+      total_grams: Math.round(stat.totalGrams * 10) / 10,
+      last_tried_at: stat.lastTriedAt,
+      latest_reactions: stat.latestReactions,
+      status,
+      status_label: statusLabel,
+      status_source: statusSource,
+      has_unattributed_reaction: stat.unattributedReaction,
+    };
+  });
+}
 
+function normalizeSolidMealPayload(babyId, body) {
+  ensureSolidFoodCatalog(babyId);
+  const inputItems = Array.isArray(body?.items)
+    ? body.items
+    : Array.isArray(body?.solid_items)
+      ? body.solid_items
+      : [];
+  if (!inputItems.length) throw new Error('至少添加一种辅食');
+
+  const findFoodStmt = db.prepare('SELECT * FROM solid_foods WHERE id = ? AND baby_id = ?');
+  const findFood = (foodId, ownerBabyId) => findFoodStmt.get(foodId, ownerBabyId);
+  const findByName = db.prepare('SELECT * FROM solid_foods WHERE baby_id = ? AND name = ?');
+  const insertFood = db.prepare(`
+    INSERT INTO solid_foods (baby_id, name, category, allergen_group)
+    VALUES (?, ?, ?, ?)
+  `);
+  const items = [];
+  for (const raw of inputItems) {
+    const name = String(raw?.name || '').trim();
+    const grams = Number(raw?.grams);
+    if (!name) throw new Error('辅食名称不能为空');
+    if (!Number.isFinite(grams) || grams <= 0) throw new Error('辅食克数必须大于 0');
+    let food = raw?.food_id ? findFood(Number(raw.food_id), babyId) : null;
+    if (!food) food = findByName.get(babyId, name);
+    if (!food) {
+      const result = insertFood.run(babyId, name, String(raw?.category || '其他'), raw?.allergen_group || null);
+      food = db.prepare('SELECT * FROM solid_foods WHERE id = ?').get(result.lastInsertRowid);
+    }
+    items.push({
+      food_id: Number(food.id),
+      name: food.name,
+      category: food.category,
+      grams: Math.round(grams * 10) / 10,
+    });
+  }
+
+  const reactionTypes = normalizeSolidReactionKeys(body?.reaction_types);
+  const itemFoodIds = new Set(items.map((item) => item.food_id));
+  const suspectedFoodIds = [...new Set(parseJsonArray(body?.suspected_food_ids)
+    .map(Number)
+    .filter((id) => itemFoodIds.has(id)))];
   return {
-    intervalMinutes: fixedInterval,
-    lastAdAt: lastAdAt.toISOString(),
-    nextAdAt: nextAdAt.toISOString(),
-    remainingMinutes,
-    overdueMinutes: diffMs < 0 ? Math.abs(Math.floor(diffMs / 60000)) : 0,
-    isAdDue: diffMs <= 0,
+    createdAt: normalizeClientDateTime(body?.eaten_at || body?.created_at),
+    items,
+    reactionTypes,
+    reactionNote: String(body?.reaction_note || '').trim() || null,
+    suspectedFoodIds,
+    note: String(body?.note || '').trim() || null,
   };
 }
 
@@ -205,6 +441,52 @@ function formatNowInShanghai(date = new Date()) {
   const mm = pad2(date.getMinutes());
   const ss = pad2(date.getSeconds());
   return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
+}
+
+function formatShanghaiDate(date) {
+  const pad2 = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+}
+
+function splitSleepRecordByLocalDay(record) {
+  const start = new Date(record.sleep_start);
+  const end = new Date(record.sleep_end);
+  if (
+    !record.sleep_start ||
+    !record.sleep_end ||
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime()) ||
+    end <= start
+  ) {
+    return [];
+  }
+
+  const segments = [];
+  let cursor = start;
+  while (cursor < end) {
+    const nextMidnight = new Date(
+      cursor.getFullYear(),
+      cursor.getMonth(),
+      cursor.getDate() + 1,
+      0,
+      0,
+      0,
+      0
+    );
+    const segmentEnd = end < nextMidnight ? end : nextMidnight;
+    const duration = Math.round((segmentEnd - cursor) / 60000);
+    if (duration > 0) {
+      segments.push({
+        source_id: record.id,
+        date: formatShanghaiDate(cursor),
+        start: cursor.toISOString(),
+        end: segmentEnd.toISOString(),
+        duration_minutes: duration,
+      });
+    }
+    cursor = segmentEnd;
+  }
+  return segments;
 }
 
 async function fetchShanghaiPudongWeather() {
@@ -639,6 +921,7 @@ app.delete('/api/babies/:id', (req, res) => {
   try {
     const { id } = req.params;
     db.prepare('DELETE FROM records WHERE baby_id = ?').run(id);
+    db.prepare('DELETE FROM solid_foods WHERE baby_id = ?').run(id);
     db.prepare('DELETE FROM babies WHERE id = ?').run(id);
     res.json({ ok: true });
   } catch (e) {
@@ -656,20 +939,30 @@ app.get('/api/records', (req, res) => {
     if (type) { sql += ' AND type = ?'; params.push(type); }
     if (date_from) { sql += ' AND date(created_at, \'+8 hours\') >= date(?)'; params.push(date_from); }
     if (date_to) { sql += ' AND date(created_at, \'+8 hours\') <= date(?)'; params.push(date_to); }
-    const orderSql = `${sql} ORDER BY created_at DESC, id DESC`;
+    const getRecordTimeline = (record) => {
+      if (record?.type === 'sleep') {
+        return record.sleep_end || record.sleep_start || record.created_at;
+      }
+      return record?.created_at;
+    };
+    const sortRecordsByTimeline = (rows) => rows.sort((a, b) => {
+      const at = parseRecordDateFlexible(getRecordTimeline(a))?.getTime() || 0;
+      const bt = parseRecordDateFlexible(getRecordTimeline(b))?.getTime() || 0;
+      if (bt !== at) return bt - at;
+      return Number(b.id || 0) - Number(a.id || 0);
+    });
     const usePaged = String(paged || '') === '1';
+    const allRecords = sortRecordsByTimeline(db.prepare(sql).all(...params));
     if (!usePaged) {
-      const records = db.prepare(orderSql).all(...params);
-      return res.json(records);
+      return res.json(allRecords);
     }
 
     const pageNum = Math.max(1, Number(page) || 1);
     const pageSizeNum = Math.min(100, Math.max(1, Number(page_size) || 20));
     const offset = (pageNum - 1) * pageSizeNum;
 
-    const totalRow = db.prepare(`SELECT COUNT(1) AS c FROM (${sql})`).get(...params);
-    const total = Number(totalRow?.c || 0);
-    const records = db.prepare(`${orderSql} LIMIT ? OFFSET ?`).all(...params, pageSizeNum, offset);
+    const total = allRecords.length;
+    const records = allRecords.slice(offset, offset + pageSizeNum);
     return res.json({
       records,
       page: pageNum,
@@ -686,8 +979,8 @@ app.post('/api/records', (req, res) => {
   try {
     const r = req.body;
     const stmt = db.prepare(`
-      INSERT INTO records (baby_id, type, created_at, note, feeding_type, left_minutes, right_minutes, amount_ml, sleep_start, sleep_end, stool, medicine_name, medicine_amount, weight_kg, height_cm)
-      VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO records (baby_id, type, created_at, note, feeding_type, left_minutes, right_minutes, amount_ml, sleep_start, sleep_end, stool, medicine_name, medicine_amount, solid_items_json, reaction_types_json, reaction_note, suspected_food_ids_json, weight_kg, height_cm)
+      VALUES (?, ?, COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       r.baby_id,
@@ -703,6 +996,10 @@ app.post('/api/records', (req, res) => {
       r.stool ?? null,
       r.medicine_name || null,
       r.medicine_amount || null,
+      r.solid_items_json || (Array.isArray(r.solid_items) ? JSON.stringify(r.solid_items) : null),
+      r.reaction_types_json || (Array.isArray(r.reaction_types) ? JSON.stringify(r.reaction_types) : null),
+      r.reaction_note || null,
+      r.suspected_food_ids_json || (Array.isArray(r.suspected_food_ids) ? JSON.stringify(r.suspected_food_ids) : null),
       r.weight_kg ?? null,
       r.height_cm ?? null
     );
@@ -743,6 +1040,10 @@ app.patch('/api/records/:id', (req, res) => {
       { key: 'stool', col: 'stool', normalize: (v) => (v === '' || v === null ? null : Number(v) ? 1 : 0) },
       { key: 'medicine_name', col: 'medicine_name', normalize: (v) => v === '' ? null : v },
       { key: 'medicine_amount', col: 'medicine_amount', normalize: (v) => v === '' ? null : v },
+      { key: 'solid_items_json', col: 'solid_items_json', normalize: (v) => v || null },
+      { key: 'reaction_types_json', col: 'reaction_types_json', normalize: (v) => v || null },
+      { key: 'reaction_note', col: 'reaction_note', normalize: (v) => v === '' ? null : v },
+      { key: 'suspected_food_ids_json', col: 'suspected_food_ids_json', normalize: (v) => v || null },
       { key: 'weight_kg', col: 'weight_kg', normalize: (v) => v === '' || v === null ? null : Number(v) },
       { key: 'height_cm', col: 'height_cm', normalize: (v) => v === '' || v === null ? null : Number(v) },
     ];
@@ -798,6 +1099,159 @@ app.delete('/api/records/:id', (req, res) => {
   }
 });
 
+// 辅食记录与食物状态 API
+app.get('/api/solid-meals', (req, res) => {
+  try {
+    const babyId = Number(req.query.baby_id);
+    if (!Number.isFinite(babyId) || babyId <= 0) return res.status(400).json({ error: 'baby_id required' });
+    res.json(getSolidMeals(babyId, req.query.date_from, req.query.date_to));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/solid-meals', (req, res) => {
+  try {
+    const babyId = Number(req.body?.baby_id);
+    if (!Number.isFinite(babyId) || babyId <= 0) return res.status(400).json({ error: 'baby_id required' });
+    const baby = db.prepare('SELECT id FROM babies WHERE id = ?').get(babyId);
+    if (!baby) return res.status(404).json({ error: 'Baby not found' });
+    const payload = normalizeSolidMealPayload(babyId, req.body);
+    const result = db.prepare(`
+      INSERT INTO records (
+        baby_id, type, created_at, note, solid_items_json, reaction_types_json,
+        reaction_note, suspected_food_ids_json
+      ) VALUES (?, 'solid_meal', COALESCE(?, CURRENT_TIMESTAMP), ?, ?, ?, ?, ?)
+    `).run(
+      babyId,
+      payload.createdAt,
+      payload.note,
+      JSON.stringify(payload.items),
+      JSON.stringify(payload.reactionTypes),
+      payload.reactionNote,
+      JSON.stringify(payload.suspectedFoodIds)
+    );
+    const row = db.prepare('SELECT * FROM records WHERE id = ?').get(result.lastInsertRowid);
+    log(JSON.stringify({
+      event: 'solid_meal_created',
+      record_id: row.id,
+      baby_id: babyId,
+      created_at: row.created_at,
+      ...getRecorderInfo(req),
+    }));
+    res.json(formatSolidMeal(row));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.patch('/api/solid-meals/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const existing = db.prepare(`SELECT * FROM records WHERE id = ? AND type = 'solid_meal'`).get(id);
+    if (!existing) return res.status(404).json({ error: 'Solid meal not found' });
+    const payload = normalizeSolidMealPayload(existing.baby_id, {
+      ...req.body,
+      items: req.body?.items ?? parseJsonArray(existing.solid_items_json),
+      reaction_types: req.body?.reaction_types ?? parseJsonArray(existing.reaction_types_json),
+      suspected_food_ids: req.body?.suspected_food_ids ?? parseJsonArray(existing.suspected_food_ids_json),
+      note: req.body?.note ?? existing.note,
+      reaction_note: req.body?.reaction_note ?? existing.reaction_note,
+    });
+    db.prepare(`
+      UPDATE records SET
+        created_at = COALESCE(?, created_at),
+        note = ?,
+        solid_items_json = ?,
+        reaction_types_json = ?,
+        reaction_note = ?,
+        suspected_food_ids_json = ?
+      WHERE id = ?
+    `).run(
+      payload.createdAt,
+      payload.note,
+      JSON.stringify(payload.items),
+      JSON.stringify(payload.reactionTypes),
+      payload.reactionNote,
+      JSON.stringify(payload.suspectedFoodIds),
+      id
+    );
+    res.json(formatSolidMeal(db.prepare('SELECT * FROM records WHERE id = ?').get(id)));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/solid-meals/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = db.prepare(`DELETE FROM records WHERE id = ? AND type = 'solid_meal'`).run(id);
+    res.json({ ok: result.changes > 0 });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/solid-foods', (req, res) => {
+  try {
+    const babyId = Number(req.query.baby_id);
+    if (!Number.isFinite(babyId) || babyId <= 0) return res.status(400).json({ error: 'baby_id required' });
+    res.json(deriveSolidFoodSummary(babyId));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch('/api/solid-foods/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const status = req.body?.manual_status == null || req.body?.manual_status === ''
+      ? null
+      : String(req.body.manual_status);
+    if (status !== null && !['confirmed_allergy', 'confirmed_safe'].includes(status)) {
+      return res.status(400).json({ error: 'invalid manual_status' });
+    }
+    const result = db.prepare(`
+      UPDATE solid_foods
+      SET manual_status = ?, manual_status_note = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(status, String(req.body?.manual_status_note || '').trim() || null, id);
+    if (!result.changes) return res.status(404).json({ error: 'Solid food not found' });
+    const food = db.prepare('SELECT baby_id FROM solid_foods WHERE id = ?').get(id);
+    res.json(deriveSolidFoodSummary(food.baby_id).find((item) => Number(item.id) === id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/solid-summary', (req, res) => {
+  try {
+    const babyId = Number(req.query.baby_id);
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : getBeijingDate().slice(0, 7);
+    if (!Number.isFinite(babyId) || babyId <= 0) return res.status(400).json({ error: 'baby_id required' });
+    const [summaryYear, summaryMonth] = month.split('-').map(Number);
+    const monthEnd = new Date(Date.UTC(summaryYear, summaryMonth, 0)).getUTCDate();
+    const meals = getSolidMeals(babyId, `${month}-01`, `${month}-${String(monthEnd).padStart(2, '0')}`);
+    const byDate = new Map();
+    for (const meal of meals) {
+      const date = solidDateKey(meal.created_at);
+      if (!date) continue;
+      const day = byDate.get(date) || { date, meal_count: 0, food_count: 0, total_grams: 0, abnormal_meal_count: 0 };
+      day.meal_count += 1;
+      day.food_count += meal.solid_items.length;
+      day.total_grams += meal.solid_items.reduce((sum, item) => sum + Number(item.grams || 0), 0);
+      if (meal.reaction_types.length) day.abnormal_meal_count += 1;
+      byDate.set(date, day);
+    }
+    res.json({
+      month,
+      days: [...byDate.values()].map((day) => ({ ...day, total_grams: Math.round(day.total_grams * 10) / 10 })),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // 喂奶统计
 app.get('/api/stats/feeding', (req, res) => {
   try {
@@ -831,25 +1285,27 @@ app.get('/api/stats/sleep', (req, res) => {
       SELECT id, sleep_start, sleep_end, created_at
       FROM records
       WHERE type = 'sleep' AND baby_id = ? AND sleep_start IS NOT NULL AND sleep_end IS NOT NULL
-        AND date(sleep_start, '+8 hours') >= date(?)
+        AND date(sleep_end, '+8 hours') >= date(?)
       ORDER BY sleep_start DESC
     `).all(baby_id, startDate);
 
     const dailyMap = {};
-    const periods = records.map(r => {
-      const start = new Date(r.sleep_start);
-      const end = new Date(r.sleep_end);
-      const duration = Math.round((end - start) / 60000);
-      const date = r.sleep_start.slice(0, 10);
-      if (!dailyMap[date]) dailyMap[date] = { total_minutes: 0, sessions: 0 };
-      dailyMap[date].total_minutes += duration;
-      dailyMap[date].sessions += 1;
-      return {
-        date,
-        start: r.sleep_start,
-        end: r.sleep_end,
-        duration_minutes: duration,
-      };
+    const periods = [];
+    for (const record of records) {
+      const segments = splitSleepRecordByLocalDay(record)
+        .filter((segment) => segment.date >= startDate);
+      for (const segment of segments) {
+        periods.push(segment);
+        if (!dailyMap[segment.date]) dailyMap[segment.date] = { total_minutes: 0, sessions: 0 };
+        dailyMap[segment.date].total_minutes += segment.duration_minutes;
+        dailyMap[segment.date].sessions += 1;
+      }
+    }
+
+    periods.sort((a, b) => {
+      const byDate = b.date.localeCompare(a.date);
+      if (byDate !== 0) return byDate;
+      return String(a.start).localeCompare(String(b.start));
     });
 
     const daily = Object.entries(dailyMap)
@@ -924,7 +1380,8 @@ app.get('/api/stats/weight', (req, res) => {
 app.get('/api/stats/growth', (req, res) => {
   try {
     const { baby_id, days = 30 } = req.query;
-    const startDate = getBeijingDateDaysAgo(Number(days));
+    const isAllTime = String(days).toLowerCase() === 'all';
+    const startDate = isAllTime ? null : getBeijingDateDaysAgo(Number(days));
     const daily = db.prepare(`
       SELECT
         date(created_at, '+8 hours') as date,
@@ -935,10 +1392,10 @@ app.get('/api/stats/growth', (req, res) => {
       FROM records
       WHERE baby_id = ?
         AND type IN ('weight', 'height')
-        AND date(created_at, '+8 hours') >= date(?)
+        AND (? IS NULL OR date(created_at, '+8 hours') >= date(?))
       GROUP BY date(created_at, '+8 hours')
       ORDER BY date DESC
-    `).all(baby_id, startDate);
+    `).all(baby_id, startDate, startDate);
 
     const latestWeight = db.prepare(`
       SELECT created_at, weight_kg
@@ -994,16 +1451,7 @@ app.get('/api/overview', (req, res) => {
     const lastFeedingAt = lastFeeding ? parseDbDateTime(lastFeeding.created_at) : null;
     const feedingReminder = computeFeedingReminder({ rules, lastFeedingAt, now });
 
-    const latestMedicationRecords = db.prepare(`
-      SELECT created_at, medicine_name, medicine_amount, note
-      FROM records
-      WHERE baby_id = ? AND type = 'medication'
-      ORDER BY created_at DESC, id DESC
-      LIMIT 500
-    `).all(baby_id);
-    const lastAdRecord = latestMedicationRecords.find((row) => isAdSupplementRecord(row)) || null;
-    const lastAdAt = lastAdRecord ? parseRecordDateFlexible(lastAdRecord.created_at, now) : null;
-    const adReminder = computeAdReminder({ lastAdAt, now });
+    const supplementReminder = getSupplementReminder(baby_id, now);
 
     const recent24hStats = computeRecent24hFeedingStats(baby_id, now);
 
@@ -1062,6 +1510,7 @@ app.get('/api/overview', (req, res) => {
     res.json({
       records,
       ageDays,
+      birthdate: baby.birthdate,
       recent24h_feeding_count: recent24hStats.count,
       recent24h_feeding_total_ml: recent24hStats.totalMl,
       reminder: {
@@ -1071,10 +1520,13 @@ app.get('/api/overview', (req, res) => {
           max_days: rules.max_days,
           feeding_interval_hours: rules.feeding_interval_hours,
           feeding_interval_minutes: rules.feeding_interval_minutes || 0,
+          awake_interval_hours: rules.awake_interval_hours ?? 2,
+          awake_interval_minutes: rules.awake_interval_minutes ?? 15,
+          show_sleep_time_range: Number(rules.show_sleep_time_range ?? 1),
         } : null,
         lastFeedingAt: lastFeedingAt ? lastFeedingAt.toISOString() : null,
         ...feedingReminder,
-        ad: adReminder,
+        supplements: supplementReminder,
       },
     });
   } catch (e) {
@@ -1100,24 +1552,87 @@ app.put('/api/reminder-rules/:id', (req, res) => {
       feeding_interval_minutes,
       diaper_interval_hours,
       diaper_interval_minutes,
+      awake_interval_hours,
+      awake_interval_minutes,
+      show_sleep_time_range,
     } = req.body;
 
     db.prepare(`
       UPDATE reminder_rules
-      SET feeding_interval_hours = ?,
-          feeding_interval_minutes = ?,
+      SET feeding_interval_hours = COALESCE(?, feeding_interval_hours),
+          feeding_interval_minutes = COALESCE(?, feeding_interval_minutes),
           diaper_interval_hours = COALESCE(?, diaper_interval_hours),
-          diaper_interval_minutes = COALESCE(?, diaper_interval_minutes)
+          diaper_interval_minutes = COALESCE(?, diaper_interval_minutes),
+          awake_interval_hours = COALESCE(?, awake_interval_hours),
+          awake_interval_minutes = COALESCE(?, awake_interval_minutes),
+          show_sleep_time_range = COALESCE(?, show_sleep_time_range)
       WHERE id = ?
     `).run(
-      Number(feeding_interval_hours || 0),
-      Number(feeding_interval_minutes || 0),
+      feeding_interval_hours === undefined ? null : Number(feeding_interval_hours),
+      feeding_interval_minutes === undefined ? null : Number(feeding_interval_minutes),
       diaper_interval_hours === undefined ? null : Number(diaper_interval_hours),
       diaper_interval_minutes === undefined ? null : Number(diaper_interval_minutes),
+      awake_interval_hours === undefined ? null : Number(awake_interval_hours),
+      awake_interval_minutes === undefined ? null : Number(awake_interval_minutes),
+      show_sleep_time_range === undefined ? null : (show_sleep_time_range ? 1 : 0),
       id
     );
 
     res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 日程自定义配置（跨设备同步）
+app.get('/api/schedule-custom', (req, res) => {
+  try {
+    const babyId = Number(req.query.baby_id);
+    if (!Number.isFinite(babyId) || babyId <= 0) {
+      return res.status(400).json({ error: 'baby_id required' });
+    }
+
+    const row = db.prepare('SELECT payload, updated_at FROM schedule_custom WHERE baby_id = ?').get(babyId);
+    if (!row) return res.json({ payload: null, updated_at: null });
+
+    let payload = null;
+    try {
+      payload = JSON.parse(row.payload);
+    } catch {
+      payload = null;
+    }
+    res.json({ payload, updated_at: row.updated_at });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/schedule-custom', (req, res) => {
+  try {
+    const babyId = Number(req.body?.baby_id);
+    if (!Number.isFinite(babyId) || babyId <= 0) {
+      return res.status(400).json({ error: 'baby_id required' });
+    }
+
+    const payload = req.body?.payload && typeof req.body.payload === 'object'
+      ? req.body.payload
+      : {};
+    const safePayload = {
+      slots: payload.slots && typeof payload.slots === 'object' ? payload.slots : {},
+      tips: Array.isArray(payload.tips) ? payload.tips : null,
+      safetyNotes: Array.isArray(payload.safetyNotes) ? payload.safetyNotes : null,
+    };
+    const payloadText = JSON.stringify(safePayload);
+
+    db.prepare(`
+      INSERT INTO schedule_custom (baby_id, payload, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(baby_id) DO UPDATE SET
+        payload = excluded.payload,
+        updated_at = CURRENT_TIMESTAMP
+    `).run(babyId, payloadText);
+
+    res.json({ ok: true, payload: safePayload });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -1185,17 +1700,7 @@ app.get('/api/schedule-stats', (req, res) => {
       hourDist[h] = (hourDist[h] || 0) + 1;
     }
 
-    // AD 补充状态
-    const medRecords = db.prepare(`
-      SELECT created_at, medicine_name, medicine_amount, note
-      FROM records
-      WHERE baby_id = ? AND type = 'medication'
-      ORDER BY created_at DESC, id DESC
-      LIMIT 200
-    `).all(id);
-    const lastAdRecord = medRecords.find(row => isAdSupplementRecord(row)) || null;
-    const lastAdAt = lastAdRecord ? parseRecordDateFlexible(lastAdRecord.created_at, now) : null;
-    const adReminder = computeAdReminder({ lastAdAt, now });
+    const supplementReminder = getSupplementReminder(id, now);
 
     // 最近一次有大便的换尿布（JS排序，避免混合时区字符串在SQL中排序错误）
     const recentPoopCandidates = db.prepare(`
@@ -1235,12 +1740,7 @@ app.get('/api/schedule-stats', (req, res) => {
         today_times: todayTimes,
         hour_distribution: hourDist,
       },
-      ad: {
-        last_at: lastAdAt ? lastAdAt.toISOString() : null,
-        is_due: adReminder.isAdDue,
-        remaining_minutes: adReminder.remainingMinutes,
-        overdue_minutes: adReminder.overdueMinutes,
-      },
+      supplements: supplementReminder,
       poop: {
         last_at: lastPoopAt ? lastPoopAt.toISOString() : null,
         hours_ago: lastPoopHoursAgo,

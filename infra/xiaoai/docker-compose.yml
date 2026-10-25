@@ -1,0 +1,15 @@
+services:
+  voice-gateway:
+    build:
+      context: ./mi-voice-agent
+      dockerfile: docker/Dockerfile
+    container_name: babynote-mi-voice-gateway
+    restart: unless-stopped
+    env_file:
+      - .env.xiaoai.local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # MCP is only needed by local services. Keep it off the LAN by default.
+      - "127.0.0.1:${MCP_PORT:-3001}:${MCP_PORT:-3001}"
+

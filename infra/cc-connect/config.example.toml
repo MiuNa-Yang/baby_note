@@ -1,0 +1,74 @@
+data_dir = "__CC_DATA_DIR__"
+
+[management]
+enabled = true
+port = 9820
+token = "__MANAGEMENT_TOKEN__"
+cors_origins = ["http://localhost:3000"]
+
+[display]
+mode = "quiet"
+thinking_messages = false
+tool_messages = false
+reply_footer = false
+
+[instant_reply]
+enabled = false
+
+[[projects]]
+name = "babynote-agent"
+inject_sender = true
+reply_footer = false
+disabled_commands = ["shell", "dir", "restart", "upgrade", "commands", "cron", "workspace", "show"]
+reset_on_idle_mins = 30
+
+[projects.users]
+default_role = "member"
+
+[projects.users.roles.member]
+user_ids = ["*"]
+disabled_commands = ["*"]
+rate_limit = { max_messages = 10, window_secs = 60 }
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "__AGENT_WORK_DIR__"
+codex_home = "__CODEX_HOME__"
+cmd = "node __BABYNOTE_ROOT__/server/agent/babynote-agent.js"
+mode = "suggest"
+backend = "exec"
+system_prompt = """
+你是家庭带娃记录助手。只处理奶量、睡眠、辅食、当天汇总和辅食计划。
+群聊触发字符已由 cc-connect 移除；私聊不需要触发字符。
+涉及宝宝数据的查询和记录必须调用 babynote MCP 工具；普通闲聊、问候和无关问题可以直接简短回答，不调用工具。记录类消息每次只能调用一个写工具。
+不要运行 Shell，不要修改文件，不要提供医疗诊断。信息不完整或工具拒绝写入时，只问一个简短澄清问题。
+成功后用一条简短中文回复确认关键数值与时间，不展示工具过程。
+把 cc-connect 注入头中的 sender_id 和 chat_id 原样传给写工具的 operator_id 和 source_chat_id；source_text 传入用户正文。
+"""
+
+[projects.agent.options.env]
+BABYNOTE_AGENT_BABY_ID = "3"
+BABYNOTE_LOCAL_MODEL = "__LOCAL_MODEL__"
+BABYNOTE_LOCAL_BASE_URL = "__LOCAL_MODEL_BASE_URL__"
+BABYNOTE_LOCAL_THINK = "none"
+BABYNOTE_LOCAL_KEEP_ALIVE = "24h"
+BABYNOTE_LOCAL_TIMEOUT_MS = "180000"
+BABYNOTE_LOCAL_COOLDOWN_MS = "300000"
+BABYNOTE_FALLBACK_MODEL = "__FALLBACK_MODEL__"
+BABYNOTE_FALLBACK_TIMEOUT_MS = "180000"
+BABYNOTE_MODEL_ROUTER_LOG = "__MODEL_ROUTER_LOG__"
+
+[[projects.platforms]]
+type = "weixin"
+
+[projects.platforms.options]
+token = "__WEIXIN_TOKEN__"
+allow_from = "__WEIXIN_ALLOW_FROM__"
+chat_id = "__WEIXIN_CHAT_ID__"
+account_id = "babynote"
+group_trigger_prefix = "0"
+burst_limit = 8
+burst_window_secs = 86400
+long_poll_timeout_ms = 35000

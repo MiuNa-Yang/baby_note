@@ -1,6 +1,7 @@
 ﻿import { useState } from 'react'
 import { API } from '../App'
 import { formatTime, getBeijingDate, getBeijingNowForInput, parseDateTime, toDateTimeLocal } from '../utils/date'
+import SolidMealFields, { buildSolidMealPayload, createSolidMealForm } from './SolidMealFields'
 
 const TYPE_LABELS = {
   feeding: { label: '喂奶', icon: '🍼' },
@@ -11,6 +12,7 @@ const TYPE_LABELS = {
   cards: { label: '黑白卡', icon: '🃏' },
   sleep: { label: '睡眠', icon: '😴' },
   medication: { label: '用药', icon: '💊' },
+  solid_meal: { label: '辅食', icon: '🥣' },
   milestone: { label: '里程碑', icon: '📌' },
 }
 
@@ -39,6 +41,15 @@ function formatDetail(r) {
     if (r.medicine_name) parts.push(r.medicine_name)
     if (r.medicine_amount) parts.push(r.medicine_amount)
   }
+  if (r.type === 'solid_meal') {
+    const items = parseJsonArray(r.solid_items_json ?? r.solid_items)
+    if (items.length) parts.push(items.map(item => `${item.name || '辅食'} ${item.grams || 0}g`).join('、'))
+    const reactions = parseJsonArray(r.reaction_types_json ?? r.reaction_types)
+    if (reactions.length) parts.push(`餐后：${reactions.map(reactionLabel).join('、')}`)
+    else parts.push('餐后正常')
+    const suspected = parseJsonArray(r.suspected_food_ids_json ?? r.suspected_food_ids)
+    if (suspected.length) parts.push(`疑似：${items.filter(item => suspected.includes(Number(item.food_id))).map(item => item.name).join('、')}`)
+  }
   if (r.type === 'weight' && r.weight_kg != null) {
     parts.push(`${Number(r.weight_kg).toFixed(2)} kg`)
   }
@@ -48,16 +59,68 @@ function formatDetail(r) {
   return parts.join(' · ')
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const REACTION_LABELS = {
+  vomiting: '呕吐',
+  diarrhea: '腹泻',
+  constipation: '便秘',
+  perioral_rash: '嘴周红疹',
+  generalized_rash: '全身红疹',
+  bloating_abdominal_pain: '腹胀/腹痛',
+  other: '其他',
+}
+
+function reactionLabel(key) {
+  return REACTION_LABELS[key] || key
+}
+
 function parseRecordTimeMs(value) {
   const d = parseDateTime(value)
   if (!d || Number.isNaN(d.getTime())) return 0
   return d.getTime()
 }
 
+function getRecordTimelineValue(record) {
+  if (record?.type === 'sleep') {
+    return record.sleep_end || record.sleep_start || record.created_at
+  }
+  return record?.created_at
+}
+
+function getRecordTimelineMs(record) {
+  return parseRecordTimeMs(getRecordTimelineValue(record))
+}
+
 function formatDayLabel(dateStr, today) {
   if (!dateStr) return ''
   if (dateStr === today) return '今天'
   return dateStr.slice(5).replace('-', '/')
+}
+
+function formatSleepRange(record) {
+  if (!record?.sleep_start) return ''
+  const start = parseDateTime(record.sleep_start)
+  const end = parseDateTime(record.sleep_end)
+  if (!start || Number.isNaN(start.getTime())) return ''
+
+  const startDate = getBeijingDate(start)
+  const startTime = formatTime(record.sleep_start)
+  if (!end || Number.isNaN(end.getTime())) return `${startTime} → 睡眠中`
+
+  const endDate = getBeijingDate(end)
+  const endTime = formatTime(record.sleep_end)
+  if (startDate === endDate) return `${startTime} → ${endTime}`
+  return `${startDate.slice(5).replace('-', '/')} ${startTime} → ${endDate.slice(5).replace('-', '/')} ${endTime}`
 }
 
 function toISOFromLocal(value) {
@@ -85,6 +148,7 @@ function makeEditForm(record) {
     stool: record.stool ?? 0,
     medicine_name: record.medicine_name || '',
     medicine_amount: record.medicine_amount || '',
+    solidMeal: record.type === 'solid_meal' ? createSolidMealForm(record) : null,
     weight_kg: record.weight_kg ?? '',
     height_cm: record.height_cm ?? '',
   }
@@ -96,13 +160,17 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
   return (
     <Modal onClose={onClose} title={`编辑${TYPE_LABELS[record.type]?.label || '记录'}`}>
       <div style={formStyles.form}>
-        <label style={formStyles.label}>记录时间</label>
-        <input
-          style={formStyles.input}
-          type="datetime-local"
-          value={form.created_at || getBeijingNowForInput()}
-          onChange={e => setForm({ ...form, created_at: e.target.value })}
-        />
+        {record.type !== 'sleep' && record.type !== 'solid_meal' && (
+          <>
+            <label style={formStyles.label}>记录时间</label>
+            <input
+              style={formStyles.input}
+              type="datetime-local"
+              value={form.created_at || getBeijingNowForInput()}
+              onChange={e => setForm({ ...form, created_at: e.target.value })}
+            />
+          </>
+        )}
 
         {record.type === 'feeding' && (
           <>
@@ -172,6 +240,14 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
               </>
             )}
           </>
+        )}
+
+        {record.type === 'solid_meal' && (
+          <SolidMealFields
+            babyId={record.baby_id}
+            form={form.solidMeal}
+            setForm={next => setForm({ ...form, solidMeal: typeof next === 'function' ? next(form.solidMeal) : next })}
+          />
         )}
 
         {record.type === 'sleep' && (
@@ -267,7 +343,14 @@ function EditRecordModal({ record, form, setForm, onClose, onSubmit }) {
   )
 }
 
-export default function RecordList({ records, onRefresh, hasMore = false, loadingMore = false, onLoadMore = null }) {
+export default function RecordList({
+  records,
+  onRefresh,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore = null,
+  showSleepTimeRange = true,
+}) {
   const [editing, setEditing] = useState(null)
   const [editForm, setEditForm] = useState({})
 
@@ -285,8 +368,25 @@ export default function RecordList({ records, onRefresh, hasMore = false, loadin
   const saveEdit = () => {
     if (!editing) return
 
-    const payload = {
-      created_at: toISOFromLocal(editForm.created_at),
+    if (editing.type === 'solid_meal') {
+      fetch(API + `/solid-meals/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildSolidMealPayload(editForm.solidMeal)),
+      })
+        .then(r => r.json())
+        .then(data => {
+          if (data?.error) throw new Error(data.error)
+          setEditing(null)
+          setEditForm({})
+          onRefresh?.()
+        })
+      return
+    }
+
+    const payload = {}
+    if (editing.type !== 'sleep') {
+      payload.created_at = toISOFromLocal(editForm.created_at)
     }
 
     if (editing.type === 'feeding') {
@@ -341,12 +441,12 @@ export default function RecordList({ records, onRefresh, hasMore = false, loadin
     )
   }
 
-  const sortedRecords = [...records].sort((a, b) => parseRecordTimeMs(b.created_at) - parseRecordTimeMs(a.created_at))
+  const sortedRecords = [...records].sort((a, b) => getRecordTimelineMs(b) - getRecordTimelineMs(a))
   const today = getBeijingDate()
   const rows = []
   let lastDate = null
   for (const r of sortedRecords) {
-    const d = parseDateTime(r.created_at)
+    const d = parseDateTime(getRecordTimelineValue(r))
     const dateKey = d && !Number.isNaN(d.getTime()) ? getBeijingDate(d) : ''
     if (dateKey && dateKey !== lastDate) {
       rows.push({ kind: 'divider', dateKey })
@@ -370,6 +470,10 @@ export default function RecordList({ records, onRefresh, hasMore = false, loadin
           const r = row.record
           const meta = TYPE_LABELS[r.type] || { label: r.type, icon: '📝' }
           const detail = formatDetail(r)
+          const sleepRange = r.type === 'sleep' && showSleepTimeRange ? formatSleepRange(r) : ''
+          const displayTime = r.type === 'sleep'
+            ? (showSleepTimeRange ? '' : (r.sleep_end ? formatTime(r.sleep_end) : ''))
+            : formatTime(r.created_at)
           return (
             <div key={r.id} style={styles.item}>
               <span style={styles.icon}>{meta.icon}</span>
@@ -377,12 +481,12 @@ export default function RecordList({ records, onRefresh, hasMore = false, loadin
                 <div style={styles.row}>
                   <span style={styles.title}>{meta.label}</span>
                 </div>
+                {sleepRange && <div style={styles.sleepRange}>{sleepRange}</div>}
                 {detail && <div style={styles.detail}>{detail}</div>}
-                {r.note && <div style={styles.note}>{r.note}</div>}
               </div>
 
               <div style={styles.side}>
-                <span style={styles.time}>{formatTime(r.created_at)}</span>
+                <span style={styles.time}>{displayTime}</span>
                 <div style={styles.actions}>
                   <button onClick={() => openEdit(r)} style={styles.editBtn} title="编辑">✏️</button>
                   <button onClick={() => handleDelete(r.id)} style={styles.delBtn} title="删除">🗑️</button>
@@ -643,7 +747,15 @@ const styles = {
     fontFeatureSettings: '"tnum"',
   },
   detail: { fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: 4 },
-  note: { fontSize: '0.85rem', marginTop: 4 },
+  sleepRange: {
+    color: 'var(--text)',
+    fontSize: '0.86rem',
+    lineHeight: 1.35,
+    marginTop: 4,
+    fontWeight: 550,
+    fontVariantNumeric: 'tabular-nums',
+    fontFeatureSettings: '"tnum"',
+  },
   actions: { display: 'flex', flexDirection: 'row', gap: 6 },
   editBtn: { background: 'var(--bg)', padding: '4px 6px', opacity: 0.9, borderRadius: 8, border: '1px solid var(--border)' },
   delBtn: { background: 'var(--bg)', padding: '4px 6px', opacity: 0.8, borderRadius: 8, border: '1px solid var(--border)' },
